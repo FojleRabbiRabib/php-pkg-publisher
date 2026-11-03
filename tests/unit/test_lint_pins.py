@@ -209,6 +209,116 @@ def test_vendored_and_environment_directories_are_skipped(tmp_path: Path) -> Non
     assert _messages(tmp_path) == []
 
 
+def _precommit(root: Path, body: str) -> None:
+    (root / ".pre-commit-config.yaml").write_text(body, encoding="utf-8")
+
+
+def test_precommit_local_meta_and_sha_pinned_repos_pass(tmp_path: Path) -> None:
+    _precommit(
+        tmp_path,
+        "repos:\n"
+        "  - repo: local\n    hooks: []\n"
+        "  - repo: meta\n    hooks: []\n"
+        f"  - repo: https://example.invalid/hooks\n    rev: {SHA}\n    hooks: []\n",
+    )
+    assert _messages(tmp_path) == []
+
+
+@pytest.mark.parametrize("rev", ["v1.2.3", "main", "3d3c42e", SHA.upper(), f"{SHA}0", '""'])
+def test_precommit_unpinned_rev_is_rejected(tmp_path: Path, rev: str) -> None:
+    _precommit(tmp_path, f"repos:\n  - repo: https://example.invalid/hooks\n    rev: {rev}\n")
+    messages = _messages(tmp_path)
+    assert len(messages) == 1
+    assert "is not a 40-hex commit SHA" in messages[0]
+
+
+def test_precommit_repo_without_rev_is_rejected(tmp_path: Path) -> None:
+    _precommit(tmp_path, "repos:\n  - repo: https://example.invalid/hooks\n    hooks: []\n")
+    assert _messages(tmp_path) == ["https://example.invalid/hooks has no rev"]
+
+
+def test_precommit_quoted_sha_passes(tmp_path: Path) -> None:
+    _precommit(tmp_path, f'repos:\n  - repo: https://example.invalid/hooks\n    rev: "{SHA}"\n')
+    assert _messages(tmp_path) == []
+
+
+def test_precommit_merge_key_cannot_hide_a_floating_repo(tmp_path: Path) -> None:
+    _precommit(
+        tmp_path,
+        "base: &b {repo: https://example.invalid/hooks, rev: v1, hooks: [{id: a}]}\n"
+        "repos:\n  - <<: *b\n",
+    )
+    assert "merge keys are not allowed" in _messages(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "repos: foo\n",
+        "repos:\n  a: {repo: https://example.invalid/hooks, rev: v1}\n",
+        "repos:\n",
+        "hooks: []\n",
+    ],
+)
+def test_precommit_repos_must_be_a_list(tmp_path: Path, body: str) -> None:
+    _precommit(tmp_path, body)
+    assert _messages(tmp_path) == ["repos is not a list"]
+
+
+@pytest.mark.parametrize("entry", ["https://example.invalid/hooks", "{rev: v1}", "[a, b]"])
+def test_precommit_entry_must_name_a_repo(tmp_path: Path, entry: str) -> None:
+    _precommit(tmp_path, f"repos:\n  - {entry}\n")
+    assert _messages(tmp_path) == ["entry is not a mapping with a repo"]
+
+
+@pytest.mark.parametrize("source", ["local", f"https://example.invalid/hooks\n    rev: {SHA}"])
+def test_precommit_additional_dependencies_are_rejected(tmp_path: Path, source: str) -> None:
+    _precommit(
+        tmp_path,
+        f"repos:\n  - repo: {source}\n    hooks:\n"
+        "      - {id: a, language: unsupported, additional_dependencies: [foo]}\n",
+    )
+    assert _messages(tmp_path) == ["additional_dependencies are not allowed; use the pins"]
+
+
+def test_precommit_local_hook_needs_a_language(tmp_path: Path) -> None:
+    _precommit(tmp_path, "repos:\n  - repo: local\n    hooks:\n      - {id: a}\n")
+    assert _messages(tmp_path) == ["local hook has no language"]
+
+
+def test_workflow_merge_key_cannot_hide_a_floating_step(tmp_path: Path) -> None:
+    _workflow(
+        tmp_path,
+        f"{HEADER}step: &s {{uses: actions/checkout@v4}}\n"
+        "jobs:\n  a:\n    steps:\n      - <<: *s\n",
+    )
+    assert "merge keys are not allowed" in _messages(tmp_path)
+
+
+def test_action_merge_key_cannot_hide_a_floating_step(tmp_path: Path) -> None:
+    action = tmp_path / "action.yml"
+    action.write_text(
+        "step: &s {uses: actions/checkout@v4}\nruns:\n  using: composite\n  steps:\n    - <<: *s\n",
+        encoding="utf-8",
+    )
+    assert "merge keys are not allowed" in _messages(tmp_path)
+
+
+@pytest.mark.parametrize("language", ["python", "node", "docker"])
+def test_precommit_local_hook_cannot_install_packages(tmp_path: Path, language: str) -> None:
+    _precommit(
+        tmp_path,
+        f"repos:\n  - repo: local\n    hooks:\n      - {{id: a, language: {language}}}\n",
+    )
+    assert _messages(tmp_path) == [f"local hook language {language} installs packages"]
+
+
+@pytest.mark.parametrize("body", ["repos: [unclosed\n", "", "- just\n- a list\n"])
+def test_unparseable_precommit_config_fails_closed(tmp_path: Path, body: str) -> None:
+    _precommit(tmp_path, body)
+    assert len(_messages(tmp_path)) == 1
+
+
 def test_main_reports_every_outcome(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert lint_pins.main([str(tmp_path)]) == 0
     assert "PIN LINT PASSED" in capsys.readouterr().out

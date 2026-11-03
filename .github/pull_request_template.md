@@ -16,4 +16,5 @@
 - [ ] `mypy` passes (strict)
 - [ ] `pytest` passes, including the negative cases (every one fails closed)
 - [ ] `python tools/lint_pins.py` passes
+- [ ] `pre-commit run --all-files` passes
 - [ ] No secrets, keys, hostnames, addresses or planning identifiers in tracked files

@@ -50,6 +50,16 @@ pytest
 python tools/lint_pins.py
 ```
 
+These checks, plus file-hygiene hooks (YAML and TOML syntax, private-key and large-file
+detection, line endings, trailing whitespace), run as git hooks through
+[pre-commit](https://pre-commit.com): on commit, and pytest on push. CI runs the same hooks. Every
+hook calls a pinned tool from the environment above, so activate it first:
+
+```bash
+pre-commit install
+pre-commit run --all-files
+```
+
 ## Licence
 
 Apache-2.0, see `LICENSE`. `NOTICE` must be preserved by anyone redistributing this work.

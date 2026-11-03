@@ -13,3 +13,8 @@ All notable changes to this project are documented here. The format follows
 - Strict loader for `products.yml` and `exclude.yml`: rejects a product without `ts`, unknown
   keys, repeated keys, unquoted versions, malformed repo names and tags, and an exclusion that
   names an undeclared product.
+- Repository hygiene: `.gitattributes` (LF normalization, binary markers), pre-commit hooks that
+  run the pinned development tools, and `CODEOWNERS`.
+- The pin lint now also checks `.pre-commit-config.yaml`: it fails on a non-local repository that
+  is not pinned to a commit SHA, on `additional_dependencies`, on a local hook that installs
+  packages, on merge keys, and on a malformed `repos` list. CI runs the pre-commit hooks.
