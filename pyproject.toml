@@ -21,8 +21,8 @@ select = ["B", "C4", "E", "F", "I", "PTH", "RUF", "S", "SIM", "UP", "W"]
 python_version = "3.10"
 strict = true
 mypy_path = "tools"
-files = ["tools", "tests"]
+files = ["publisher", "tools", "tests"]
 
 [tool.pytest.ini_options]
-pythonpath = ["tools"]
+pythonpath = [".", "tools"]
 testpaths = ["tests"]

@@ -10,7 +10,10 @@ Checks, over the repository under ROOT:
     digest;
   * no workflow triggers on `pull_request_target`, requests `id-token: write` or grants
     `permissions: write-all`;
-  * every workflow declares top-level `permissions:`.
+  * every workflow declares top-level `permissions:`;
+  * `.pre-commit-config.yaml` has no merge keys, pins every non-local repository to a 40-hex
+    commit SHA, allows no `additional_dependencies`, and lets a local hook only run tools
+    that are already installed (`unsupported`, `unsupported_script`, `system`, `script`).
 
 Workflows and actions are parsed as YAML, so quoting, flow mappings, comments and values on
 the following line are handled by the parser, not by pattern matching.
@@ -29,6 +32,8 @@ from pathlib import Path
 import yaml
 from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 
+COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
+LOCAL_HOOK_LANGUAGES = frozenset({"script", "system", "unsupported", "unsupported_script"})
 SHA_REF = re.compile(r"@[0-9a-f]{40}$")
 DIGEST_REF = re.compile(r"@sha256:[0-9a-f]{64}$")
 FROM_LINE = re.compile(r"^\s*FROM\s+(?:--\S+\s+)*(?P<image>\S+)(?:\s+AS\s+(?P<alias>\S+))?", re.I)
@@ -157,6 +162,7 @@ def lint_workflow(path: Path) -> list[Finding]:
     root = _load(path, findings)
     if root is None:
         return findings
+    _check_merge_keys(path, root, findings)
     has_permissions = False
     for key, value in _pairs(root):
         if key == "permissions":
@@ -181,6 +187,7 @@ def lint_action(path: Path) -> list[Finding]:
     root = _load(path, findings)
     if root is None:
         return findings
+    _check_merge_keys(path, root, findings)
     for key, value in _pairs(root):
         if key != "runs":
             continue
@@ -190,6 +197,61 @@ def lint_action(path: Path) -> list[Finding]:
             elif runs_key == "image" and (_scalar(runs_value) or "").startswith("docker://"):
                 _check_image(path, runs_value, findings)
     _check_permissions(path, root, findings)
+    return findings
+
+
+def _check_merge_keys(path: Path, node: Node, findings: list[Finding]) -> None:
+    for key_node, value_node in node.value if isinstance(node, MappingNode) else ():
+        if _scalar(key_node) == "<<":
+            findings.append(Finding(path, _line(key_node), "merge keys are not allowed"))
+        _check_merge_keys(path, value_node, findings)
+    for item in _items(node):
+        _check_merge_keys(path, item, findings)
+
+
+def _check_precommit_repo(path: Path, entry: Node, findings: list[Finding]) -> None:
+    fields = dict(_pairs(entry))
+    source = _scalar(fields["repo"]) if "repo" in fields else None
+    if source is None:
+        findings.append(Finding(path, _line(entry), "entry is not a mapping with a repo"))
+        return
+    if source not in ("local", "meta"):
+        rev = fields.get("rev")
+        if rev is None:
+            findings.append(Finding(path, _line(fields["repo"]), f"{source} has no rev"))
+        elif not COMMIT_SHA.fullmatch(_scalar(rev) or ""):
+            findings.append(
+                Finding(path, _line(rev), f"rev {_scalar(rev)} is not a 40-hex commit SHA")
+            )
+    for hook in _items(fields.get("hooks")):
+        hook_fields = dict(_pairs(hook))
+        if "additional_dependencies" in hook_fields:
+            findings.append(
+                Finding(path, _line(hook), "additional_dependencies are not allowed; use the pins")
+            )
+        if source != "local":
+            continue
+        language = _scalar(hook_fields["language"]) if "language" in hook_fields else None
+        if language is None:
+            findings.append(Finding(path, _line(hook), "local hook has no language"))
+        elif language not in LOCAL_HOOK_LANGUAGES:
+            findings.append(
+                Finding(path, _line(hook), f"local hook language {language} installs packages")
+            )
+
+
+def lint_precommit(path: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    root = _load(path, findings)
+    if root is None:
+        return findings
+    _check_merge_keys(path, root, findings)
+    repos = dict(_pairs(root)).get("repos")
+    if not isinstance(repos, SequenceNode):
+        findings.append(Finding(path, 1 if repos is None else _line(repos), "repos is not a list"))
+        return findings
+    for entry in repos.value:
+        _check_precommit_repo(path, entry, findings)
     return findings
 
 
@@ -239,6 +301,8 @@ def lint_tree(root: Path) -> list[Finding]:
             findings.extend(lint_workflow(path))
         elif _is_action(path.name):
             findings.extend(lint_action(path))
+        elif path.name == ".pre-commit-config.yaml":
+            findings.extend(lint_precommit(path))
         elif _is_dockerfile(path.name):
             findings.extend(lint_dockerfile(path))
     return findings
