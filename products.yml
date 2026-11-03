@@ -1,4 +1,5 @@
 # Shipped products only. Every entry needs `repo`, `php`, `arch` and `ts`; none has a
-# default, and a product without `ts` will be rejected once the loader lands. An unreleased
-# product never appears here.
+# default, and the loader rejects a product without `ts`. Quote every version ("8.3").
+# `repo` is the lowercase GitHub repository name. `exclude` is an optional list of tags to drop
+# from the metadata. An unreleased product never appears here.
 products: []

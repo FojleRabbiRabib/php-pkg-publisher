@@ -32,7 +32,8 @@ others.
 
 | Path | Role |
 |---|---|
-| `products.yml` | Shipped products only: `repo`, `php`, `arch`, `ts` (all required, no defaults) |
+| `products.yml` | Shipped products only: `repo`, `php`, `arch`, `ts` (all required, no defaults), optional `exclude` |
+| `publisher/` | The publisher package; today the strict loader for `products.yml` and `exclude.yml` |
 | `tools/` | Repository tooling, including the pin lint (`python tools/lint_pins.py [root]`) |
 | `tests/` | Unit tests (negative and container layers arrive with the publisher) |
 
