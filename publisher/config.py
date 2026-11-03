@@ -31,6 +31,7 @@ PHP_VERSIONS: Final = frozenset({"8.3", "8.4", "8.5"})
 THREAD_SAFETY: Final = frozenset({"nts", "zts"})
 
 REPO_NAME: Final = re.compile(r"[a-z0-9](?:[a-z0-9._-]{0,98}[a-z0-9_-])?")
+FINAL_TAG: Final = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
 RELEASE_TAG: Final = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z]+[0-9]+)?")
 STRING_TAG: Final = "tag:yaml.org,2002:str"
 MERGE_TAG: Final = "tag:yaml.org,2002:merge"

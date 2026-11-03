@@ -1,0 +1,118 @@
+[
+  {
+    "tag_name": "v0.3.0",
+    "draft": false,
+    "prerelease": false,
+    "immutable": false,
+    "assets": [
+      {
+        "name": "php-pecl-resvg-0.3.0-1.el8.aarch64.rpm",
+        "state": "uploaded",
+        "size": 1325844,
+        "digest": "sha256:f1705dc20487f5960a94add0cd9015a963921204826c66bce979db3f26ec30da",
+        "browser_download_url": "https://github.com/FojleRabbiRabib/resvg-php/releases/download/v0.3.0/php-pecl-resvg-0.3.0-1.el8.aarch64.rpm"
+      },
+      {
+        "name": "php-pecl-resvg-0.3.0-1.el8.aarch64.rpm.bundle",
+        "state": "uploaded",
+        "size": 10116,
+        "digest": "sha256:687062c158de4ecaaa812ccf081b265f7371d2f4e7622813a6cc29fba8887130",
+        "browser_download_url": "https://github.com/FojleRabbiRabib/resvg-php/releases/download/v0.3.0/php-pecl-resvg-0.3.0-1.el8.aarch64.rpm.bundle"
+      },
+      {
+        "name": "php-pecl-resvg-0.3.0-1.el8.x86_64.rpm",
+        "state": "uploaded",
+        "size": 1511880,
+        "digest": "sha256:67c8640b9785eac9a6c12bedec841e01b9f78237d1609a1e255e0dbd02c00c1d",
+        "browser_download_url": "https://github.com/FojleRabbiRabib/resvg-php/releases/download/v0.3.0/php-pecl-resvg-0.3.0-1.el8.x86_64.rpm"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.2.0",
+    "draft": false,
+    "prerelease": false,
+    "immutable": false,
+    "assets": [
+      {
+        "name": "php_resvg-0.2.0_php8.3-aarch64-linux-glibc-nts.zip",
+        "state": "uploaded",
+        "size": 1589048,
+        "digest": "sha256:bc91a7bc8101723f3842d6dfb0a9b4c707e30a50c669929928b6db33de879b98",
+        "browser_download_url": "https://github.com/FojleRabbiRabib/resvg-php/releases/download/v0.2.0/php_resvg-0.2.0_php8.3-aarch64-linux-glibc-nts.zip"
+      },
+      {
+        "name": "php_resvg-0.2.0_php8.3-aarch64-linux-glibc-nts.zip.bundle",
+        "state": "uploaded",
+        "size": 10433,
+        "digest": "sha256:f8c896013fca8131ecc5b1e8db7d1ae7943af7b159b5186fea99f91375d9c6f5",
+        "browser_download_url": "https://github.com/FojleRabbiRabib/resvg-php/releases/download/v0.2.0/php_resvg-0.2.0_php8.3-aarch64-linux-glibc-nts.zip.bundle"
+      },
+      {
+        "name": "php_resvg-0.2.0_php8.3-aarch64-linux-musl-nts.zip",
+        "state": "uploaded",
+        "size": 1587876,
+        "digest": "sha256:f272786ffb4ad424446a855f1952942643063d3072c8e4a2fd43ababb337a03f",
+        "browser_download_url": "https://github.com/FojleRabbiRabib/resvg-php/releases/download/v0.2.0/php_resvg-0.2.0_php8.3-aarch64-linux-musl-nts.zip"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.1.1+resvg.0.48.1",
+    "draft": false,
+    "prerelease": false,
+    "immutable": false,
+    "assets": [
+      {
+        "name": "php_resvg-0.1.1_php8.3-x86_64-linux-glibc-nts.zip",
+        "state": "uploaded",
+        "size": 1701597,
+        "digest": "sha256:2f6fd80c6b80e02e18621bc046ee2f01a66994b8bdf1d86261415061555b1dc8",
+        "browser_download_url": "https://github.com/FojleRabbiRabib/resvg-php/releases/download/v0.1.1%2Bresvg.0.48.1/php_resvg-0.1.1_php8.3-x86_64-linux-glibc-nts.zip"
+      },
+      {
+        "name": "php_resvg-0.1.1_php8.3-x86_64-linux-glibc-nts.zip.bundle",
+        "state": "uploaded",
+        "size": 10780,
+        "digest": "sha256:6a0a5e7922f4bd530f7dd366962717c74547a411ae62dd0f389889cff52e71ee",
+        "browser_download_url": "https://github.com/FojleRabbiRabib/resvg-php/releases/download/v0.1.1%2Bresvg.0.48.1/php_resvg-0.1.1_php8.3-x86_64-linux-glibc-nts.zip.bundle"
+      },
+      {
+        "name": "php_resvg-0.1.1_php8.4-x86_64-linux-glibc-nts.zip",
+        "state": "uploaded",
+        "size": 1701543,
+        "digest": "sha256:d146ffdf2c91c5f60439823f2ca5b923484bb1d251a4edef680d8fa8984017dd",
+        "browser_download_url": "https://github.com/FojleRabbiRabib/resvg-php/releases/download/v0.1.1%2Bresvg.0.48.1/php_resvg-0.1.1_php8.4-x86_64-linux-glibc-nts.zip"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.1.0+resvg.0.48.1",
+    "draft": false,
+    "prerelease": false,
+    "immutable": false,
+    "assets": [
+      {
+        "name": "php_resvg-0.1.0_php8.3-x86_64-linux-glibc-nts.zip",
+        "state": "uploaded",
+        "size": 1701608,
+        "digest": "sha256:0f3a419aafa4a58b8aae1f856172184a400fad4be374e05725cc2434368782b3",
+        "browser_download_url": "https://github.com/FojleRabbiRabib/resvg-php/releases/download/v0.1.0%2Bresvg.0.48.1/php_resvg-0.1.0_php8.3-x86_64-linux-glibc-nts.zip"
+      },
+      {
+        "name": "php_resvg-0.1.0_php8.3-x86_64-linux-glibc-nts.zip.bundle",
+        "state": "uploaded",
+        "size": 10827,
+        "digest": "sha256:62f386a5c951175fd1c4e234679516f4b9a9392b3859e6ad2f94e5a2b99ac9f1",
+        "browser_download_url": "https://github.com/FojleRabbiRabib/resvg-php/releases/download/v0.1.0%2Bresvg.0.48.1/php_resvg-0.1.0_php8.3-x86_64-linux-glibc-nts.zip.bundle"
+      },
+      {
+        "name": "php_resvg-0.1.0_php8.4-x86_64-linux-glibc-nts.zip",
+        "state": "uploaded",
+        "size": 1701639,
+        "digest": "sha256:7959d8c8a119534e267a0968e3905edf994c182923aa0c8d5f55efc04fcceef0",
+        "browser_download_url": "https://github.com/FojleRabbiRabib/resvg-php/releases/download/v0.1.0%2Bresvg.0.48.1/php_resvg-0.1.0_php8.4-x86_64-linux-glibc-nts.zip"
+      }
+    ]
+  }
+]

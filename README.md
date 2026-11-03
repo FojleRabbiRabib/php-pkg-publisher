@@ -33,7 +33,7 @@ others.
 | Path | Role |
 |---|---|
 | `products.yml` | Shipped products only: `repo`, `php`, `arch`, `ts` (all required, no defaults), optional `exclude` |
-| `publisher/` | The publisher package; today the strict loader for `products.yml` and `exclude.yml` |
+| `publisher/` | The publisher package: the strict loader for `products.yml` and `exclude.yml`, and the GitHub release feed client |
 | `tools/` | Repository tooling, including the pin lint (`python tools/lint_pins.py [root]`) |
 | `tests/` | Unit tests (negative and container layers arrive with the publisher) |
 
@@ -43,6 +43,8 @@ Python 3.10. The development tools are pinned with hashes in `requirements-dev.t
 `pip-compile --generate-hashes --allow-unsafe --strip-extras requirements-dev.in` regenerates:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 python -m pip install --require-hashes --no-deps -r requirements-dev.txt
 ruff check . && ruff format --check .
 mypy
@@ -53,7 +55,9 @@ python tools/lint_pins.py
 These checks, plus file-hygiene hooks (YAML and TOML syntax, private-key and large-file
 detection, line endings, trailing whitespace), run as git hooks through
 [pre-commit](https://pre-commit.com): on commit, and pytest on push. CI runs the same hooks. Every
-hook calls a pinned tool from the environment above, so activate it first:
+hook calls a pinned tool from the environment above, so install the hooks with that environment
+active (the installed hook records its Python; a distro `pre-commit` is too old for this config)
+and activate it again before each commit:
 
 ```bash
 pre-commit install

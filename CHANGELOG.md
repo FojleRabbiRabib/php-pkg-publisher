@@ -18,3 +18,7 @@ All notable changes to this project are documented here. The format follows
 - The pin lint now also checks `.pre-commit-config.yaml`: it fails on a non-local repository that
   is not pinned to a commit SHA, on `additional_dependencies`, on a local hook that installs
   packages, on merge keys, and on a malformed `repos` list. CI runs the pre-commit hooks.
+- GitHub release feed client: lists a product's releases and assets over `api.github.com` only,
+  with conditional requests, bounded pagination, no redirects and a private token file. It
+  rejects a release whose asset name, upload state or download URL breaks the rules, ignores
+  unsupported tags, and reports each release's `immutable` flag.
