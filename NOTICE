@@ -1,0 +1,7 @@
+php-pkg-publisher — signed APT and RPM repository platform for PHP extensions
+https://github.com/FojleRabbiRabib/php-pkg-publisher
+
+Copyright 2026 Fojle Rabbi (Rabib)
+
+Licensed under the Apache License, Version 2.0 (see LICENSE). Anyone redistributing
+this work must preserve this NOTICE file.

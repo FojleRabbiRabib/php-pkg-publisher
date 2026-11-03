@@ -1,0 +1,4 @@
+# Shipped products only. Every entry needs `repo`, `php`, `arch` and `ts`; none has a
+# default, and a product without `ts` will be rejected once the loader lands. An unreleased
+# product never appears here.
+products: []

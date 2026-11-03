@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+/build/
+/dist/
+
+# PHP receiver tooling (composer)
+/vendor/
+
+# Secrets and local configuration never belong here
+.env
+.env.*
+*.local
+*.key
+*.pem
+
+# Editor / OS
+.DS_Store
+*.swp
