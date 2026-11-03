@@ -511,6 +511,13 @@ def test_token_is_read_and_one_newline_removed(tmp_path: Path) -> None:
     assert feed.read_token(_token_file(tmp_path, b"tok_pat_x")) == "tok_pat_x"
 
 
+def test_token_checks_need_a_posix_system(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = _token_file(tmp_path, b"tok_x")
+    monkeypatch.setattr(os, "name", "nt")
+    with pytest.raises(FeedError, match="POSIX"):
+        feed.read_token(path)
+
+
 @pytest.mark.parametrize("mode", [0o640, 0o604, 0o644, 0o660, 0o666])
 def test_token_file_must_be_private(tmp_path: Path, mode: int) -> None:
     with pytest.raises(FeedError, match="must not be accessible"):

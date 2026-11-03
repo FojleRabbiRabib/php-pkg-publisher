@@ -219,7 +219,9 @@ class HttpsTransport:
 
 
 def read_token(path: Path) -> str:
-    """Read the GitHub token from a file only its owner can access."""
+    """Read the GitHub token from a file only its owner can access (POSIX systems only)."""
+    if os.name != "posix":
+        raise FeedError("token file checks need a POSIX system")
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
         with os.fdopen(descriptor, "rb") as handle:

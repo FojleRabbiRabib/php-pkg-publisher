@@ -39,7 +39,9 @@ others.
 
 ## Development
 
-Python 3.10. The development tools are pinned with hashes in `requirements-dev.txt`, which
+Python 3.10 on Linux (the publisher is a POSIX service: its checks use file modes and owners, and
+it is not supported on Windows). The development tools are pinned with hashes in
+`requirements-dev.txt`, which
 `pip-compile --generate-hashes --allow-unsafe --strip-extras requirements-dev.in` regenerates:
 
 ```bash
