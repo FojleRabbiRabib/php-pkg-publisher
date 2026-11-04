@@ -22,3 +22,7 @@ All notable changes to this project are documented here. The format follows
   with conditional requests, bounded pagination, no redirects and a private token file. It
   rejects a release whose asset name, upload state or download URL breaks the rules, ignores
   unsupported tags, and reports each release's `immutable` flag.
+- Release asset cache: downloads an asset through its single GitHub redirect to the fixed CDN host
+  with no credentials, and keeps it only if its size and sha256 digest match what GitHub lists.
+  An asset without a digest is refused. The cache directory must be private to the current user,
+  and files are written atomically under their digest.

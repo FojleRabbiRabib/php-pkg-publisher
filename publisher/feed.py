@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Literal, Protocol
 
-from publisher import config
+from publisher import config, net
 
 GITHUB_OWNER: Final = "FojleRabbiRabib"
 API_HOST: Final = "api.github.com"
@@ -138,25 +138,6 @@ class _Reject(Exception):
     """One release breaks a content rule; the rest of the listing is still valid."""
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
-        return None
-
-
-def _safe(text: str) -> str:
-    return ascii(text)[:80]
-
-
-def _headers(pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
-    result: dict[str, str] = {}
-    for key, value in pairs:
-        name = key.lower()
-        if name in result and name in SINGLE_HEADERS:
-            raise FeedError(f"response repeats the {name} header")
-        result[name] = value
-    return result
-
-
 class HttpsTransport:
     """GET over https with a timeout, body cap and deadline; no redirects, proxies or http.
 
@@ -177,7 +158,7 @@ class HttpsTransport:
         return [
             urllib.request.ProxyHandler({}),
             urllib.request.HTTPSHandler(context=ssl.create_default_context()),
-            _NoRedirect(),
+            net.NoRedirect(),
             urllib.request.HTTPDefaultErrorHandler(),
             urllib.request.HTTPErrorProcessor(),
             urllib.request.UnknownHandler(),
@@ -204,7 +185,10 @@ class HttpsTransport:
         pairs: Iterable[tuple[str, str]],
         reply: http.client.HTTPResponse | urllib.error.HTTPError,
     ) -> Response:
-        headers = _headers(pairs)
+        try:
+            headers = net.headers(pairs, SINGLE_HEADERS)
+        except ValueError as error:
+            raise FeedError(str(error)) from error
         deadline = time.monotonic() + REQUEST_DEADLINE_SECONDS
         chunks: list[bytes] = []
         total = 0
@@ -247,7 +231,7 @@ def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
-            raise FeedError(f"response repeats the key {_safe(key)}")
+            raise FeedError(f"response repeats the key {net.safe(key)}")
         result[key] = value
     return result
 
@@ -337,7 +321,7 @@ def _asset(repo: str, tag: str, raw: Any) -> Asset:
     if digest is not None and not isinstance(digest, str):
         raise FeedError("'digest' has the wrong type")
     if not ASSET_NAME.fullmatch(name) or ".." in name:
-        raise _Reject(f"asset name {_safe(name)} is not allowed")
+        raise _Reject(f"asset name {net.safe(name)} is not allowed")
     if state != "uploaded":
         raise _Reject(f"asset {name} is not fully uploaded")
     if size < 0:
@@ -389,7 +373,7 @@ def _parse_page(
         elif short and config.RELEASE_TAG.fullmatch(tag):
             kind = "prerelease"
         else:
-            ignored.append(_safe(tag))
+            ignored.append(net.safe(tag))
             continue
         if tag in seen:
             raise FeedError(f"tag {tag} is listed twice")
@@ -405,7 +389,7 @@ def list_releases(
 ) -> Listing | Unchanged:
     """Return every release of `repo`, or Unchanged when `etag` still matches page one."""
     if not config.REPO_NAME.fullmatch(repo) or ".." in repo:
-        raise FeedError(f"invalid repo name {_safe(repo)}")
+        raise FeedError(f"invalid repo name {net.safe(repo)}")
     if etag is not None and not ETAG.fullmatch(etag):
         raise FeedError("etag is malformed")
     headers = {
