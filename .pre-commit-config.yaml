@@ -69,13 +69,16 @@ repos:
         entry: end-of-file-fixer
         language: unsupported
         types: [text]
+        exclude: ^tests/fixtures/sigstore/
       - id: mixed-line-ending
         name: fix mixed line endings
         entry: mixed-line-ending --fix=lf
         language: unsupported
         types: [text]
+        exclude: ^tests/fixtures/sigstore/
       - id: trailing-whitespace
         name: trim trailing whitespace
         entry: trailing-whitespace-fixer --markdown-linebreak-ext=md
         language: unsupported
         types: [text]
+        exclude: ^tests/fixtures/sigstore/

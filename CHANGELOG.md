@@ -26,6 +26,13 @@ All notable changes to this project are documented here. The format follows
   with no credentials, and keeps it only if its size and sha256 digest match what GitHub lists.
   An asset without a digest is refused. The cache directory must be private to the current user,
   and files are written atomically under their digest.
+- Release verifier: admits a release only if every expected package and its cosign bundle are
+  present, each bundle proves the product's release workflow at that exact tag signed the file
+  (checked offline against a Sigstore trusted-root file, transparency log on), `SHA256SUMS`
+  agrees with the release, and each deb or rpm declares the expected name, version, release,
+  epoch and architecture. An rpm must carry a signature by a valid signing key of the pinned RPM
+  key; an unsigned rpm, an unpinned key and an expired or revoked key are refused. A product that
+  declares `zts` is refused until ZTS packages can be verified.
 - `products.yml` entries now require `extension`, the name inside package names
   (`php8.3-<extension>`); two products cannot share one.
 
