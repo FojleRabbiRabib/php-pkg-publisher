@@ -362,11 +362,11 @@ def requeue(store: StateStore, repo: str, tag: str) -> None:
     store.save(repo, state)
 
 
-def _kind(tag: str) -> Kind:
+def kind_of(tag: str) -> Kind:
     return "final" if config.FINAL_TAG.fullmatch(tag) else "prerelease"
 
 
-def _order(tag: str) -> tuple[int, ...]:
+def tag_order(tag: str) -> tuple[int, ...]:
     return tuple(int(number) for number in re.findall(r"[0-9]+", tag))
 
 
@@ -423,7 +423,7 @@ class Admitter:
         return frozenset(listed | set(product.exclude))
 
     def _wanted(self, tag: str, excluded: frozenset[str]) -> bool:
-        return tag not in excluded and _kind(tag) in self._kinds
+        return tag not in excluded and kind_of(tag) in self._kinds
 
     def _load(self, repo: str) -> ProductState:
         try:
@@ -497,20 +497,20 @@ class Admitter:
         present = {release.tag for release in listing.releases} | rejected.keys()
         state.etag = listing.etag
         state.listed_at = now
-        state.listed = tuple(sorted(present, key=_order))
-        for tag in sorted(state.admitted.keys() - present, key=_order):
+        state.listed = tuple(sorted(present, key=tag_order))
+        for tag in sorted(state.admitted.keys() - present, key=tag_order):
             self._event(repo, tag, "vanished", "an admitted tag is no longer listed")
         for tag in [tag for tag in state.failed if tag not in present]:
             del state.failed[tag]
         self._save(repo, state)
-        for tag in sorted(rejected, key=_order, reverse=True):
+        for tag in sorted(rejected, key=tag_order, reverse=True):
             if (
                 self._wanted(tag, excluded)
                 and tag not in state.admitted
                 and self._due(state, tag, now)
             ):
                 self._fail(repo, state, tag, rejected[tag], now)
-        for release in sorted(listing.releases, key=lambda r: _order(r.tag), reverse=True):
+        for release in sorted(listing.releases, key=lambda r: tag_order(r.tag), reverse=True):
             if not self._wanted(release.tag, excluded):
                 continue
             if release.tag in state.admitted:

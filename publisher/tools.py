@@ -44,7 +44,9 @@ class ToolOutputLimit(ToolError):
 class Tools:
     """Absolute paths of the programs the verifier runs."""
 
+    apt_ftparchive: Path
     cosign: Path
+    createrepo_c: Path
     dpkg_deb: Path
     gpg: Path
     rpm: Path
@@ -55,7 +57,9 @@ class Tools:
         """Find each program in `search_path`, by default the fixed system directories."""
         found: dict[str, Path] = {}
         for field, program in (
+            ("apt_ftparchive", "apt-ftparchive"),
             ("cosign", "cosign"),
+            ("createrepo_c", "createrepo_c"),
             ("dpkg_deb", "dpkg-deb"),
             ("gpg", "gpg"),
             ("rpm", "rpm"),

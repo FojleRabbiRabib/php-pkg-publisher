@@ -302,6 +302,11 @@ def _typed(item: dict[str, Any], key: str, kind: type) -> Any:
     return value
 
 
+def download_url(repo: str, tag: str, name: str) -> str:
+    """The one URL GitHub serves a release asset from; the caller has checked the three parts."""
+    return f"https://github.com/{GITHUB_OWNER}/{repo}/releases/download/{tag}/{name}"
+
+
 def _asset(repo: str, tag: str, raw: Any) -> Asset:
     item = _mapping(raw, "asset")
     name: str = _typed(item, "name", str)
@@ -319,8 +324,7 @@ def _asset(repo: str, tag: str, raw: Any) -> Asset:
         raise _Reject(f"asset {name} has a negative size")
     if digest is not None and not DIGEST.fullmatch(digest):
         raise _Reject(f"asset {name} has a malformed digest")
-    expected = f"https://github.com/{GITHUB_OWNER}/{repo}/releases/download/{tag}/{name}"
-    if url != expected:
+    if url != download_url(repo, tag, name):
         raise _Reject(f"asset {name} has an unexpected download URL")
     return Asset(name=name, size=size, digest=digest, url=url)
 

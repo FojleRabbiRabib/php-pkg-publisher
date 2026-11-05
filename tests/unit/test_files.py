@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 from pathlib import Path
 
 import pytest
@@ -57,6 +58,16 @@ def test_write_atomic_replaces_the_file_and_leaves_no_temporary(tmp_path: Path) 
     files.write_atomic(target, b"new")
     assert target.read_bytes() == b"new"
     assert [entry.name for entry in tmp_path.iterdir()] == ["data"]
+
+
+@pytest.mark.parametrize("mode", [None, 0o644])
+def test_write_atomic_sets_the_file_mode(tmp_path: Path, mode: int | None) -> None:
+    target = tmp_path / "f"
+    if mode is None:
+        files.write_atomic(target, b"x")
+    else:
+        files.write_atomic(target, b"x", mode=mode)
+    assert stat.S_IMODE(target.stat().st_mode) == (0o600 if mode is None else mode)
 
 
 def test_write_atomic_can_set_the_modification_time(tmp_path: Path) -> None:

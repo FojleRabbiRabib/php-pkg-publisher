@@ -55,16 +55,23 @@ def sync_directory(path: Path) -> None:
 
 
 def write_atomic(
-    path: Path, data: bytes, *, prefix: str = TEMPORARY_PREFIX, mtime: float | None = None
+    path: Path,
+    data: bytes,
+    *,
+    prefix: str = TEMPORARY_PREFIX,
+    mtime: float | None = None,
+    mode: int = 0o600,
 ) -> None:
     """Replace `path` with `data`: temporary file, fsync, rename, then fsync of the directory.
 
-    `mtime` sets the modification time before the rename, for files whose age is data. Raises
-    OSError; the temporary file is removed on failure.
+    `mtime` sets the modification time before the rename, for files whose age is data. `mode` is
+    the file mode, private by default; published files pass 0o644. Raises OSError; the temporary
+    file is removed on failure.
     """
     descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=prefix)
     temporary = Path(name)
     try:
+        os.fchmod(descriptor, mode)
         with os.fdopen(descriptor, "wb") as out:
             out.write(data)
             out.flush()

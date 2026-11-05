@@ -47,6 +47,16 @@ All notable changes to this project are documented here. The format follows
   full listing is made at least weekly.
 - Run lock: an exclusive `flock` on a private file, waited for with a deadline, and a nudge file
   that earns one more pass when it arrives during a pass.
+- Metadata builder: writes the unsigned APT and RPM metadata for the admitted packages with the
+  standard tools (`apt-ftparchive`, `createrepo_c`) and checks their output against the admitted
+  records by exact set, so a package a tool drops, adds or changes fails the build. The `Release`
+  file carries by-hash copies and a 14-day `Valid-Until`; the rpm locations are relative so a
+  client resolves them to the shared pool path; six rpm trees (PHP 8.3 to 8.5, both
+  architectures) always exist. Both hash sections of `Release` (SHA256, SHA512) and their by-hash
+  copies are checked, because apt asks for the SHA512 path. The declaration in `products.yml`
+  decides what is listed. The
+  tree holds metadata only, never a package or a link, and every file is 0644 and every directory
+  0755 whatever umask the tools ran under.
 - `products.yml` entries now require `extension`, the name inside package names
   (`php8.3-<extension>`); two products cannot share one.
 

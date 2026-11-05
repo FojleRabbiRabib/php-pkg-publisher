@@ -16,22 +16,31 @@ ENV = Path("/usr/bin/env")
 
 def test_locate_finds_every_program_by_absolute_path() -> None:
     found = Tools.locate(os.environ["PATH"])
-    for path in (found.cosign, found.dpkg_deb, found.gpg, found.rpm, found.rpmkeys):
+    programs = (
+        found.apt_ftparchive,
+        found.cosign,
+        found.createrepo_c,
+        found.dpkg_deb,
+        found.gpg,
+        found.rpm,
+        found.rpmkeys,
+    )
+    for path in programs:
         assert path.is_absolute()
         assert path.exists()
 
 
 def test_locate_fails_when_a_program_is_missing(tmp_path: Path) -> None:
-    with pytest.raises(ToolError, match="cosign is not installed"):
+    with pytest.raises(ToolError, match="apt-ftparchive is not installed"):
         Tools.locate(str(tmp_path))
 
 
 def test_locate_ignores_the_callers_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    fake = tmp_path / "cosign"
+    fake = tmp_path / "apt-ftparchive"
     fake.write_text("#!/bin/sh\n", encoding="utf-8")
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
-    with pytest.raises(ToolError, match="cosign is not installed"):
+    with pytest.raises(ToolError, match="apt-ftparchive is not installed"):
         Tools.locate(str(tmp_path / "nowhere"))
 
 
