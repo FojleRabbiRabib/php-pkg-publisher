@@ -36,6 +36,17 @@ All notable changes to this project are documented here. The format follows
 - Sigstore trusted-root refresh: `cosign initialize` keeps a persistent, private TUF store and a
   validated copy of the trusted root. If the refresh fails, a copy up to seven days old is used
   and reported as not refreshed; an older, missing or future-dated copy stops the run.
+- Admit stage: decides per tag which releases may be served. A release is admitted only if it is
+  immutable and passes the verifier; the admitted packages (name, layout, PHP, architecture,
+  sha256, size) are recorded per product in a strict, private, atomically written state file.
+  A failed tag is retried with backoff (1 h, 6 h, then daily) and quarantined after five
+  attempts over three days, with one alert a day until it is excluded or requeued. A failing tag
+  never blocks a later tag or another product, and an admitted tag is never dropped. A fault of
+  the host (missing tool, unusable cache or state, low disk space, rejected token, rate limit)
+  stops the stage without touching any counter. The etag is sent only when nothing waits, and a
+  full listing is made at least weekly.
+- Run lock: an exclusive `flock` on a private file, waited for with a deadline, and a nudge file
+  that earns one more pass when it arrives during a pass.
 - `products.yml` entries now require `extension`, the name inside package names
   (`php8.3-<extension>`); two products cannot share one.
 
