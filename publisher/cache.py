@@ -163,7 +163,7 @@ class HttpsFetcher:
             yield status, headers, reply
 
 
-def _require_private_directory(path: Path) -> None:
+def require_private_directory(path: Path) -> None:
     try:
         info = path.lstat()
     except OSError as error:
@@ -176,7 +176,7 @@ def _require_private_directory(path: Path) -> None:
         raise CacheDirectoryError(f"{path}: must not be accessible by group or others")
 
 
-def _sync_directory(path: Path) -> None:
+def sync_directory(path: Path) -> None:
     descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
         os.fsync(descriptor)
@@ -195,7 +195,7 @@ class Cache:
         self._objects = root / "objects"
         self._temporary = root / "tmp"
         self._fetch = fetch
-        _require_private_directory(root)
+        require_private_directory(root)
         for directory in (self._objects, self._temporary):
             try:
                 directory.mkdir(mode=0o700, exist_ok=True)
@@ -203,7 +203,7 @@ class Cache:
                 raise CacheDirectoryError(
                     f"{directory}: cannot create: {error.strerror or error}"
                 ) from error
-            _require_private_directory(directory)
+            require_private_directory(directory)
         self._sweep_temporary()
 
     def _sweep_temporary(self) -> None:
@@ -288,7 +288,7 @@ class Cache:
                 out.flush()
                 os.fsync(out.fileno())
             temporary.replace(target)
-            _sync_directory(self._objects)
+            sync_directory(self._objects)
         except OSError as error:
             raise CacheDirectoryError(
                 f"cannot store {net.safe(asset.name)}: {error.strerror or error}"
