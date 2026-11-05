@@ -33,6 +33,9 @@ All notable changes to this project are documented here. The format follows
   epoch and architecture. An rpm must carry a signature by a valid signing key of the pinned RPM
   key; an unsigned rpm, an unpinned key and an expired or revoked key are refused. A product that
   declares `zts` is refused until ZTS packages can be verified.
+- Sigstore trusted-root refresh: `cosign initialize` keeps a persistent, private TUF store and a
+  validated copy of the trusted root. If the refresh fails, a copy up to seven days old is used
+  and reported as not refreshed; an older, missing or future-dated copy stops the run.
 - `products.yml` entries now require `extension`, the name inside package names
   (`php8.3-<extension>`); two products cannot share one.
 

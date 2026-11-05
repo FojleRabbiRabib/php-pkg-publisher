@@ -19,8 +19,10 @@ Rejected means this release only; ToolError (tools.py) means the run cannot cont
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,7 +30,7 @@ from types import TracebackType
 from typing import Final, Literal
 
 from publisher import config, net
-from publisher.cache import Cache
+from publisher.cache import Cache, CacheDirectoryError, require_private_directory, sync_directory
 from publisher.feed import GITHUB_OWNER, Asset, Release
 from publisher.tools import Result, ToolError, ToolOutputLimit, Tools, ToolTimeout, run
 
@@ -40,7 +42,13 @@ MAX_SMALL_FILE_BYTES: Final = 1024 * 1024
 MAX_KEY_FILE_BYTES: Final = 64 * 1024
 COSIGN_TIMEOUT_SECONDS: Final = 120.0
 PACKAGE_TOOL_TIMEOUT_SECONDS: Final = 60.0
+INITIALIZE_TIMEOUT_SECONDS: Final = 120.0
+TRUST_ROOT_MAX_AGE_SECONDS: Final = 7 * 24 * 3600.0
 TRUSTED_ROOT_MEDIA_TYPE: Final = "application/vnd.dev.sigstore.trustedroot"
+TUF_DIRECTORY: Final = "tuf"
+TRUSTED_ROOT_FILE: Final = "trusted_root.json"
+# Where `cosign initialize` leaves the file inside TUF_ROOT; a cosign internal, re-check on a bump.
+TRUSTED_ROOT_TARGET: Final = Path("tuf-repo-cdn.sigstore.dev/targets/trusted_root.json")
 
 DEB_ARCHITECTURES: Final = {"amd64": "amd64", "arm64": "arm64"}
 RPM_ARCHITECTURES: Final = {"amd64": "x86_64", "arm64": "aarch64"}
@@ -83,6 +91,15 @@ class Package:
 class VerifiedPackage:
     package: Package
     path: Path
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TrustedRoot:
+    """The trusted-root file to verify with, and whether this run fetched it fresh."""
+
+    path: Path
+    age_seconds: float
+    refreshed: bool
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -224,6 +241,117 @@ def check_signature(
         raise Rejected(f"{name} is not signed by the release workflow of this tag")
 
 
+def read_trusted_root(path: Path) -> bytes:
+    """Read a Sigstore trusted-root file, refusing anything else."""
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(MAX_SMALL_FILE_BYTES + 1)
+        document = json.loads(raw)
+    except (OSError, ValueError) as error:
+        raise ToolError(f"{path}: trusted root cannot be read") from error
+    media_type = document.get("mediaType") if isinstance(document, dict) else None
+    if len(raw) > MAX_SMALL_FILE_BYTES or not (
+        isinstance(media_type, str) and media_type.startswith(TRUSTED_ROOT_MEDIA_TYPE)
+    ):
+        raise ToolError(f"{path}: not a Sigstore trusted root")
+    return raw
+
+
+def _store_trusted_root(raw: bytes, target: Path, *, now: float) -> None:
+    """Replace `target` atomically; its modification time records when it was fetched."""
+    descriptor, name = tempfile.mkstemp(dir=target.parent, prefix="root-")
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as out:
+            out.write(raw)
+            out.flush()
+            os.fsync(out.fileno())
+        os.utime(temporary, (now, now))
+        temporary.replace(target)
+        sync_directory(target.parent)
+    except OSError as error:
+        temporary.unlink(missing_ok=True)
+        raise ToolError(
+            f"{target}: cannot store the trusted root: {error.strerror or error}"
+        ) from error
+
+
+def _require_private(path: Path) -> None:
+    try:
+        require_private_directory(path)
+    except CacheDirectoryError as error:
+        raise ToolError(str(error)) from error
+
+
+def _prepare_trust_directory(directory: Path, *, now: float) -> Path:
+    """Check the trust directory, create its TUF store and drop leftovers of a killed run."""
+    _require_private(directory)
+    tuf = directory / TUF_DIRECTORY
+    try:
+        tuf.mkdir(mode=0o700, exist_ok=True)
+    except OSError as error:
+        raise ToolError(f"{tuf}: cannot create: {error.strerror or error}") from error
+    _require_private(tuf)
+    try:
+        for entry in directory.glob("root-*"):
+            if entry.lstat().st_mtime < now - INITIALIZE_TIMEOUT_SECONDS:
+                entry.unlink(missing_ok=True)
+    except OSError as error:
+        raise ToolError(f"{directory}: cannot clean up: {error.strerror or error}") from error
+    return tuf
+
+
+def _fetch_trusted_root(tools: Tools, directory: Path, tuf: Path, *, now: float) -> Path:
+    """Run `cosign initialize` into the persistent TUF store and keep a validated copy."""
+    try:
+        # A file left by an earlier run must never pass for this run's fetch.
+        (tuf / TRUSTED_ROOT_TARGET).unlink(missing_ok=True)
+    except OSError as error:
+        raise ToolError(
+            f"{tuf}: cannot clear the old trusted root: {error.strerror or error}"
+        ) from error
+    result = run(
+        [tools.cosign, "initialize"],
+        home=directory,
+        timeout=INITIALIZE_TIMEOUT_SECONDS,
+        env={"TUF_ROOT": str(tuf)},
+    )
+    if result.code != 0:
+        raise ToolError("cosign initialize failed")
+    target = directory / TRUSTED_ROOT_FILE
+    _store_trusted_root(read_trusted_root(tuf / TRUSTED_ROOT_TARGET), target, now=now)
+    return target
+
+
+def obtain_trusted_root(tools: Tools, directory: Path, *, now: float) -> TrustedRoot:
+    """Refresh the Sigstore trusted root, or fall back to a copy at most seven days old.
+
+    `directory` is private to the publisher and persistent, so the TUF client inside it can
+    follow root rotations from the last root it trusted. A failed refresh is run-wide, not a
+    verdict on any release: a recent copy is returned with `refreshed=False` for the caller to
+    report, an older, missing or future-dated copy stops the run.
+    """
+    tuf = _prepare_trust_directory(directory, now=now)
+    try:
+        path = _fetch_trusted_root(tools, directory, tuf, now=now)
+    except ToolError as error:
+        reason = error
+    else:
+        return TrustedRoot(path=path, age_seconds=0.0, refreshed=True)
+    copy = directory / TRUSTED_ROOT_FILE
+    try:
+        info = copy.lstat()
+    except OSError:
+        raise ToolError(f"no trusted root and the refresh failed: {reason}") from reason
+    age = now - info.st_mtime
+    if not stat.S_ISREG(info.st_mode) or age < 0 or age > TRUST_ROOT_MAX_AGE_SECONDS:
+        raise ToolError(
+            f"the trusted root is unusable and the refresh failed: {reason}"
+        ) from reason
+    read_trusted_root(copy)
+    return TrustedRoot(path=copy, age_seconds=age, refreshed=False)
+
+
 class Verifier:
     """Runs the checks with one private working area; use it as a context manager."""
 
@@ -231,7 +359,8 @@ class Verifier:
         if not work.is_absolute() or not work.is_dir():
             raise ToolError(f"{work}: work directory must be an existing absolute path")
         self._tools = tools
-        self._trusted_root = self._check_trusted_root(trusted_root)
+        read_trusted_root(trusted_root)
+        self._trusted_root = trusted_root
         self._home = Path(tempfile.mkdtemp(prefix="verify-", dir=work))
         try:
             self._rpm_db = self._home / "rpmdb"
@@ -259,21 +388,6 @@ class Verifier:
     def key_ids(self) -> frozenset[str]:
         """The long key ids of the valid signing keys that rpm signatures are held to."""
         return self._key_ids
-
-    @staticmethod
-    def _check_trusted_root(path: Path) -> Path:
-        try:
-            with path.open("rb") as handle:
-                raw = handle.read(MAX_SMALL_FILE_BYTES + 1)
-            document = json.loads(raw)
-        except (OSError, ValueError) as error:
-            raise ToolError(f"{path}: trusted root cannot be read") from error
-        media_type = document.get("mediaType") if isinstance(document, dict) else None
-        if len(raw) > MAX_SMALL_FILE_BYTES or not (
-            isinstance(media_type, str) and media_type.startswith(TRUSTED_ROOT_MEDIA_TYPE)
-        ):
-            raise ToolError(f"{path}: not a Sigstore trusted root")
-        return path
 
     def _load_rpm_key(self, path: Path) -> frozenset[str]:
         """Pin the signing keys of the RPM key file, refusing an expired or revoked key."""
