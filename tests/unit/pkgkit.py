@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ class Key:
     public: Path
     subkey_id: str
     subkey_fingerprint: str
+    primary_fingerprint: str
 
 
 def _find(program: str) -> Path:
@@ -32,8 +34,19 @@ def _find(program: str) -> Path:
     return Path(path)
 
 
-def make_key(tools: Tools, root: Path, name: str, state: KeyState = "valid") -> Key:
-    """Create a key whose signing subkey is valid, expired or revoked, or whose master expired."""
+def make_key(
+    tools: Tools,
+    root: Path,
+    name: str,
+    state: KeyState = "valid",
+    *,
+    lifetime: str = "1y",
+    primary_lifetime: str = "0",
+) -> Key:
+    """Create a key whose signing subkey is valid, expired or revoked, or whose master expired.
+
+    `lifetime` is how long a valid signing subkey lives (gpg notation, e.g. "10d").
+    """
     home = root / name
     home.mkdir(mode=0o700)
     env = {"GNUPGHOME": str(home)}
@@ -42,9 +55,11 @@ def make_key(tools: Tools, root: Path, name: str, state: KeyState = "valid") -> 
     past = state in ("expired", "primary-expired")
     faked: list[str | Path] = ["--faked-system-time", LONG_AGO] if past else []
     uid = f"{name} <{name}@example.invalid>"
-    lifetime = "1d" if state == "primary-expired" else "0"
+    master_lifetime = "1d" if state == "primary-expired" else primary_lifetime
     created = run(
-        [*gpg, *faked, "--quick-gen-key", uid, "rsa3072", "cert", lifetime], home=home, env=env
+        [*gpg, *faked, "--quick-gen-key", uid, "rsa3072", "cert", master_lifetime],
+        home=home,
+        env=env,
     )
     assert created.code == 0
     listing = run([*gpg, "--with-colons", "--list-keys"], home=home, env=env)
@@ -52,7 +67,7 @@ def make_key(tools: Tools, root: Path, name: str, state: KeyState = "valid") -> 
         line.split(":")[9] for line in listing.stdout.splitlines() if line.startswith("fpr")
     )
     added = run(
-        [*gpg, *faked, "--quick-add-key", master, "rsa3072", "sign", "1d" if faked else "1y"],
+        [*gpg, *faked, "--quick-add-key", master, "rsa3072", "sign", "1d" if faked else lifetime],
         home=home,
         env=env,
     )
@@ -75,7 +90,50 @@ def make_key(tools: Tools, root: Path, name: str, state: KeyState = "valid") -> 
     exported = run([*gpg, "--armor", "--export", master], home=home, env=env)
     public = root / f"{name}.asc"
     public.write_text(exported.stdout, encoding="utf-8")
-    return Key(home=home, public=public, subkey_id=subkey_id, subkey_fingerprint=subkey_fingerprint)
+    return Key(
+        home=home,
+        public=public,
+        subkey_id=subkey_id,
+        subkey_fingerprint=subkey_fingerprint,
+        primary_fingerprint=master,
+    )
+
+
+def _gpg(tools: Tools, key: Key, *args: str | Path, home: Path | None = None) -> str:
+    where = home or key.home
+    command: list[str | Path] = [tools.gpg, "--batch", "--no-tty", "--pinentry-mode", "loopback"]
+    command += ["--passphrase", "", *args]
+    result = run(command, home=where, env={"GNUPGHOME": str(where)})
+    assert result.code == 0, result.stderr
+    return result.stdout
+
+
+def add_signing_subkey(tools: Tools, key: Key, root: Path, name: str) -> Key:
+    """Add a second signing subkey (a rotation target) and write the updated public certificate."""
+    _gpg(tools, key, "--quick-add-key", key.primary_fingerprint, "rsa3072", "sign", "1y")
+    listing = _gpg(tools, key, "--with-colons", "--fixed-list-mode", "--list-keys")
+    lines = listing.splitlines()
+    indexes = [i for i, line in enumerate(lines) if line.startswith("sub")]
+    newest = indexes[-1]
+    public = root / f"{name}.asc"
+    public.write_text(_gpg(tools, key, "--armor", "--export", key.primary_fingerprint), "utf-8")
+    return Key(
+        home=key.home,
+        public=public,
+        subkey_id=lines[newest].split(":")[4].lower(),
+        subkey_fingerprint=lines[newest + 1].split(":")[9],
+        primary_fingerprint=key.primary_fingerprint,
+    )
+
+
+def subkeys_only(tools: Tools, key: Key, root: Path, name: str) -> Key:
+    """Copy the signing subkeys into a new home that holds no primary secret key."""
+    exported = root / f"{name}-secret-subkeys.gpg"
+    _gpg(tools, key, "--export-secret-subkeys", "--output", exported)
+    home = root / name
+    home.mkdir(mode=0o700)
+    _gpg(tools, key, "--import", exported, home=home)
+    return dataclasses.replace(key, home=home)
 
 
 def stop_agent(key: Key) -> None:

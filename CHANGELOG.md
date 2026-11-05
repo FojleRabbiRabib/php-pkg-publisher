@@ -57,6 +57,17 @@ All notable changes to this project are documented here. The format follows
   decides what is listed. The
   tree holds metadata only, never a package or a link, and every file is 0644 and every directory
   0755 whatever umask the tools ran under.
+- Metadata signer: signs `InRelease`, `Release.gpg` and every `repomd.xml.asc` with exactly one
+  configured signing subkey, one signature per file. Each signature is checked against the pinned
+  public certificate that clients receive (the keyring), so a key that differs from the shipped
+  keyring fails the run and not every client: one good signature, by that subkey of the pinned
+  primary key, SHA-256, close to the clock, and `InRelease` carrying exactly the `Release` text.
+  It refuses a signing home that holds the primary secret key, a subkey that is expired, revoked
+  or missing from the certificate, a subkey or primary key that expires before the `Release` stops
+  being valid, and a subkey that would need a passphrase. It signs a private copy of each file and
+  refuses if the file changed meanwhile, writes nothing until every signature has passed, writes
+  the signatures and `Release` world-readable (0644), and fails if it cannot stop the `gpg-agent`
+  it started.
 - `products.yml` entries now require `extension`, the name inside package names
   (`php8.3-<extension>`); two products cannot share one.
 

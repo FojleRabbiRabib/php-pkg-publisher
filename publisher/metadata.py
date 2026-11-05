@@ -289,7 +289,7 @@ def _check_packages(index_dir: Path, wanted: Sequence[Entry]) -> None:
         raise MetadataError(f"{plain.parent.name}: compressed indexes differ from Packages")
 
 
-def _parse_release(
+def parse_release(
     text: str,
 ) -> tuple[dict[str, str], dict[str, dict[str, tuple[str, int]]]]:
     """Return the fields and, per by-hash algorithm (SHA256, SHA512), name -> (digest, size)."""
@@ -314,7 +314,7 @@ def _parse_release(
 
 
 def _check_release(dists: Path, architectures: Sequence[str]) -> None:
-    fields, hashes = _parse_release(_text(dists / "Release"))
+    fields, hashes = parse_release(_text(dists / "Release"))
     expected_fields = {
         "Origin": ORIGIN,
         "Label": LABEL,

@@ -22,6 +22,7 @@ def test_locate_finds_every_program_by_absolute_path() -> None:
         found.createrepo_c,
         found.dpkg_deb,
         found.gpg,
+        found.gpgconf,
         found.rpm,
         found.rpmkeys,
     )

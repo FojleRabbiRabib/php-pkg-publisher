@@ -49,6 +49,7 @@ class Tools:
     createrepo_c: Path
     dpkg_deb: Path
     gpg: Path
+    gpgconf: Path
     rpm: Path
     rpmkeys: Path
 
@@ -62,6 +63,7 @@ class Tools:
             ("createrepo_c", "createrepo_c"),
             ("dpkg_deb", "dpkg-deb"),
             ("gpg", "gpg"),
+            ("gpgconf", "gpgconf"),
             ("rpm", "rpm"),
             ("rpmkeys", "rpmkeys"),
         ):
