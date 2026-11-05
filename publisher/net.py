@@ -21,6 +21,20 @@ def safe(text: str) -> str:
     return ascii(text)[:80]
 
 
+class DuplicateKey(ValueError):
+    """A JSON object repeats a key."""
+
+
+def no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """`object_pairs_hook` for json.loads that refuses a repeated key."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise DuplicateKey(f"repeats the key {safe(key)}")
+        result[key] = value
+    return result
+
+
 def headers(pairs: Iterable[tuple[str, str]], single: frozenset[str]) -> dict[str, str]:
     """Lowercase header names; raise ValueError when a header in `single` is repeated."""
     result: dict[str, str] = {}

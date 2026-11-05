@@ -227,15 +227,6 @@ def read_token(path: Path) -> str:
     return token
 
 
-def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise FeedError(f"response repeats the key {net.safe(key)}")
-        result[key] = value
-    return result
-
-
 def _check_api_url(url: str) -> str:
     """Accept only a releases page on the GitHub API and return its path."""
     parts = urllib.parse.urlsplit(url)
@@ -357,7 +348,9 @@ def _parse_page(
     seen: set[str],
 ) -> None:
     try:
-        document = json.loads(body.decode("utf-8"), object_pairs_hook=_no_duplicate_keys)
+        document = json.loads(body.decode("utf-8"), object_pairs_hook=net.no_duplicate_keys)
+    except net.DuplicateKey as error:
+        raise FeedError(f"response {error}") from error
     except (ValueError, RecursionError) as error:
         raise FeedError("response is not valid JSON") from error
     if not isinstance(document, list):

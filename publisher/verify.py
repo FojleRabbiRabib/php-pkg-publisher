@@ -19,7 +19,6 @@ Rejected means this release only; ToolError (tools.py) means the run cannot cont
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import stat
@@ -29,8 +28,8 @@ from pathlib import Path
 from types import TracebackType
 from typing import Final, Literal
 
-from publisher import config, net
-from publisher.cache import Cache, CacheDirectoryError, require_private_directory, sync_directory
+from publisher import config, files, net
+from publisher.cache import Cache
 from publisher.feed import GITHUB_OWNER, Asset, Release
 from publisher.tools import Result, ToolError, ToolOutputLimit, Tools, ToolTimeout, run
 
@@ -47,6 +46,7 @@ TRUST_ROOT_MAX_AGE_SECONDS: Final = 7 * 24 * 3600.0
 TRUSTED_ROOT_MEDIA_TYPE: Final = "application/vnd.dev.sigstore.trustedroot"
 TUF_DIRECTORY: Final = "tuf"
 TRUSTED_ROOT_FILE: Final = "trusted_root.json"
+TRUSTED_ROOT_TEMPORARY: Final = "root-"
 # Where `cosign initialize` leaves the file inside TUF_ROOT; a cosign internal, re-check on a bump.
 TRUSTED_ROOT_TARGET: Final = Path("tuf-repo-cdn.sigstore.dev/targets/trusted_root.json")
 
@@ -259,18 +259,9 @@ def read_trusted_root(path: Path) -> bytes:
 
 def _store_trusted_root(raw: bytes, target: Path, *, now: float) -> None:
     """Replace `target` atomically; its modification time records when it was fetched."""
-    descriptor, name = tempfile.mkstemp(dir=target.parent, prefix="root-")
-    temporary = Path(name)
     try:
-        with os.fdopen(descriptor, "wb") as out:
-            out.write(raw)
-            out.flush()
-            os.fsync(out.fileno())
-        os.utime(temporary, (now, now))
-        temporary.replace(target)
-        sync_directory(target.parent)
+        files.write_atomic(target, raw, prefix=TRUSTED_ROOT_TEMPORARY, mtime=now)
     except OSError as error:
-        temporary.unlink(missing_ok=True)
         raise ToolError(
             f"{target}: cannot store the trusted root: {error.strerror or error}"
         ) from error
@@ -278,8 +269,8 @@ def _store_trusted_root(raw: bytes, target: Path, *, now: float) -> None:
 
 def _require_private(path: Path) -> None:
     try:
-        require_private_directory(path)
-    except CacheDirectoryError as error:
+        files.require_private_directory(path)
+    except files.FileError as error:
         raise ToolError(str(error)) from error
 
 
@@ -293,9 +284,9 @@ def _prepare_trust_directory(directory: Path, *, now: float) -> Path:
         raise ToolError(f"{tuf}: cannot create: {error.strerror or error}") from error
     _require_private(tuf)
     try:
-        for entry in directory.glob("root-*"):
-            if entry.lstat().st_mtime < now - INITIALIZE_TIMEOUT_SECONDS:
-                entry.unlink(missing_ok=True)
+        files.sweep_temporary(
+            directory, TRUSTED_ROOT_TEMPORARY, older_than=now - INITIALIZE_TIMEOUT_SECONDS
+        )
     except OSError as error:
         raise ToolError(f"{directory}: cannot clean up: {error.strerror or error}") from error
     return tuf

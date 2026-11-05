@@ -32,7 +32,7 @@ from collections.abc import Callable, Generator, Mapping
 from pathlib import Path
 from typing import Final
 
-from publisher import net
+from publisher import files, net
 from publisher.feed import Asset
 
 ORIGIN_HOSTS: Final = frozenset({"github.com"})
@@ -163,25 +163,11 @@ class HttpsFetcher:
             yield status, headers, reply
 
 
-def require_private_directory(path: Path) -> None:
+def _require_private(path: Path) -> None:
     try:
-        info = path.lstat()
-    except OSError as error:
-        raise CacheDirectoryError(f"{path}: cannot inspect: {error.strerror or error}") from error
-    if not stat.S_ISDIR(info.st_mode):
-        raise CacheDirectoryError(f"{path}: not a directory")
-    if info.st_uid != os.geteuid():
-        raise CacheDirectoryError(f"{path}: must be owned by the current user")
-    if info.st_mode & 0o077:
-        raise CacheDirectoryError(f"{path}: must not be accessible by group or others")
-
-
-def sync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+        files.require_private_directory(path)
+    except files.FileError as error:
+        raise CacheDirectoryError(str(error)) from error
 
 
 class Cache:
@@ -192,10 +178,11 @@ class Cache:
             raise CacheDirectoryError("the cache needs a POSIX system")
         if not root.is_absolute():
             raise CacheDirectoryError(f"{root}: cache root must be an absolute path")
+        self._root = root
         self._objects = root / "objects"
         self._temporary = root / "tmp"
         self._fetch = fetch
-        require_private_directory(root)
+        _require_private(root)
         for directory in (self._objects, self._temporary):
             try:
                 directory.mkdir(mode=0o700, exist_ok=True)
@@ -203,8 +190,12 @@ class Cache:
                 raise CacheDirectoryError(
                     f"{directory}: cannot create: {error.strerror or error}"
                 ) from error
-            require_private_directory(directory)
+            _require_private(directory)
         self._sweep_temporary()
+
+    @property
+    def root(self) -> Path:
+        return self._root
 
     def _sweep_temporary(self) -> None:
         """Remove download leftovers that no live download can still be writing."""
@@ -288,7 +279,7 @@ class Cache:
                 out.flush()
                 os.fsync(out.fileno())
             temporary.replace(target)
-            sync_directory(self._objects)
+            files.sync_directory(self._objects)
         except OSError as error:
             raise CacheDirectoryError(
                 f"cannot store {net.safe(asset.name)}: {error.strerror or error}"
