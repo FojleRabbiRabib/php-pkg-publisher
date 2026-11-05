@@ -26,3 +26,10 @@ All notable changes to this project are documented here. The format follows
   with no credentials, and keeps it only if its size and sha256 digest match what GitHub lists.
   An asset without a digest is refused. The cache directory must be private to the current user,
   and files are written atomically under their digest.
+- `products.yml` entries now require `extension`, the name inside package names
+  (`php8.3-<extension>`); two products cannot share one.
+
+### Changed
+
+- Release tags may not have leading zeros in a number (`v01.0.0` is ignored), so two tags cannot
+  map to one package version.

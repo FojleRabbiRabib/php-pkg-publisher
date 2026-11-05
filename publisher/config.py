@@ -10,9 +10,10 @@ Both files are parsed as YAML node trees, not into Python objects, so that:
 Anything unknown, missing or malformed raises ConfigError, which stops the run before it
 publishes anything. A product without `ts` is rejected; no field has a default.
 
-products.yml:  products: [{repo, php, arch, ts, exclude?}, ...]
+products.yml:  products: [{repo, extension, php, arch, ts, exclude?}, ...]
 exclude.yml:   exclude: [{product, tag}, ...]
-Repo names are lowercase only; tags are `vX.Y.Z` or `vX.Y.Z-<letters><digits>`.
+Repo names are lowercase only; `extension` is the name inside package names (php8.3-<extension>);
+tags are `vX.Y.Z` or `vX.Y.Z-<letters><digits>`.
 """
 
 from __future__ import annotations
@@ -30,9 +31,11 @@ ARCHITECTURES: Final = frozenset({"amd64", "arm64"})
 PHP_VERSIONS: Final = frozenset({"8.3", "8.4", "8.5"})
 THREAD_SAFETY: Final = frozenset({"nts", "zts"})
 
+EXTENSION_NAME: Final = re.compile(r"[a-z][a-z0-9]{0,31}")
 REPO_NAME: Final = re.compile(r"[a-z0-9](?:[a-z0-9._-]{0,98}[a-z0-9_-])?")
-FINAL_TAG: Final = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
-RELEASE_TAG: Final = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z]+[0-9]+)?")
+_NUMBER = r"(?:0|[1-9][0-9]*)"
+FINAL_TAG: Final = re.compile(rf"v{_NUMBER}\.{_NUMBER}\.{_NUMBER}")
+RELEASE_TAG: Final = re.compile(rf"v{_NUMBER}\.{_NUMBER}\.{_NUMBER}(?:-[a-z]+[0-9]+)?")
 STRING_TAG: Final = "tag:yaml.org,2002:str"
 MERGE_TAG: Final = "tag:yaml.org,2002:merge"
 MAX_FILE_BYTES: Final = 1024 * 1024
@@ -45,6 +48,7 @@ class ConfigError(Exception):
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Product:
     repo: str
+    extension: str
     php: tuple[str, ...]
     arch: tuple[str, ...]
     ts: tuple[str, ...]
@@ -135,6 +139,12 @@ class _Reader:
             raise self.fail(node, f"invalid repo name {value!r}")
         return value
 
+    def extension(self, node: Node) -> str:
+        value = self.string(node)
+        if not EXTENSION_NAME.fullmatch(value):
+            raise self.fail(node, f"invalid extension name {value!r}")
+        return value
+
     def tag(self, node: Node) -> str:
         value = self.string(node)
         if not RELEASE_TAG.fullmatch(value):
@@ -177,14 +187,20 @@ def load_products(path: Path) -> ProductList:
     top = reader.mapping(root, required=("products",))
     products: list[Product] = []
     for node in reader.sequence(top["products"]):
-        fields = reader.mapping(node, required=("repo", "php", "arch", "ts"), optional=("exclude",))
+        fields = reader.mapping(
+            node, required=("repo", "extension", "php", "arch", "ts"), optional=("exclude",)
+        )
         repo = reader.repo(fields["repo"])
         if any(product.repo == repo for product in products):
             raise reader.fail(fields["repo"], f"duplicate product {repo!r}")
+        extension = reader.extension(fields["extension"])
+        if any(product.extension == extension for product in products):
+            raise reader.fail(fields["extension"], f"duplicate extension {extension!r}")
         exclude = reader.tags(fields["exclude"]) if "exclude" in fields else ()
         products.append(
             Product(
                 repo=repo,
+                extension=extension,
                 php=reader.choices(fields["php"], PHP_VERSIONS, "php"),
                 arch=reader.choices(fields["arch"], ARCHITECTURES, "arch"),
                 ts=reader.choices(fields["ts"], THREAD_SAFETY, "ts"),

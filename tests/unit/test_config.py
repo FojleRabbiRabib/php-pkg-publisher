@@ -13,11 +13,13 @@ from publisher.config import ConfigError, Exclusion, Product
 VALID = (
     "products:\n"
     "  - repo: usearch-php\n"
+    "    extension: usearch\n"
     '    php: ["8.3", "8.4"]\n'
     "    arch: [amd64, arm64]\n"
     "    ts: [nts]\n"
     "    exclude: [v0.3.0, v0.3.1-rc1]\n"
     "  - repo: resvg-php\n"
+    "    extension: resvg\n"
     '    php: ["8.5"]\n'
     "    arch: [amd64]\n"
     "    ts: [nts, zts]\n"
@@ -45,12 +47,20 @@ def test_valid_file_loads_every_field(tmp_path: Path) -> None:
     assert loaded.products == (
         Product(
             repo="usearch-php",
+            extension="usearch",
             php=("8.3", "8.4"),
             arch=("amd64", "arm64"),
             ts=("nts",),
             exclude=("v0.3.0", "v0.3.1-rc1"),
         ),
-        Product(repo="resvg-php", php=("8.5",), arch=("amd64",), ts=("nts", "zts"), exclude=()),
+        Product(
+            repo="resvg-php",
+            extension="resvg",
+            php=("8.5",),
+            arch=("amd64",),
+            ts=("nts", "zts"),
+            exclude=(),
+        ),
     )
 
 
@@ -64,16 +74,16 @@ def test_digest_is_the_sha256_of_the_file_bytes(tmp_path: Path) -> None:
     assert config.load_products(path).sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-@pytest.mark.parametrize("missing", ["repo", "php", "arch", "ts"])
+@pytest.mark.parametrize("missing", ["repo", "extension", "php", "arch", "ts"])
 def test_every_required_field_is_enforced(tmp_path: Path, missing: str) -> None:
-    fields = {"repo": "a-php", "php": '["8.3"]', "arch": "[amd64]", "ts": "[nts]"}
+    fields = {"repo": "a-php", "extension": "a", "php": '["8.3"]', "arch": "[amd64]", "ts": "[nts]"}
     del fields[missing]
     body = "products:\n  - " + "\n    ".join(f"{k}: {v}" for k, v in fields.items()) + "\n"
     assert f"missing required key '{missing}'" in _fail(tmp_path, body)
 
 
 def test_ts_has_no_default(tmp_path: Path) -> None:
-    body = _product('{repo: a-php, php: ["8.3"], arch: [amd64]}\n')
+    body = _product('{repo: a-php, extension: a, php: ["8.3"], arch: [amd64]}\n')
     message = _fail(tmp_path, body)
     assert "missing required key 'ts'" in message
     assert message.startswith(f"{tmp_path / 'products.yml'}:2:")
@@ -97,7 +107,7 @@ def test_ts_has_no_default(tmp_path: Path) -> None:
     ],
 )
 def test_field_values_are_validated(tmp_path: Path, field: str, value: str, fragment: str) -> None:
-    fields = {"repo": "a-php", "php": '["8.3"]', "arch": "[amd64]", "ts": "[nts]"}
+    fields = {"repo": "a-php", "extension": "a", "php": '["8.3"]', "arch": "[amd64]", "ts": "[nts]"}
     fields[field] = value
     body = "products:\n  - " + "\n    ".join(f"{k}: {v}" for k, v in fields.items()) + "\n"
     assert fragment in _fail(tmp_path, body)
@@ -105,40 +115,49 @@ def test_field_values_are_validated(tmp_path: Path, field: str, value: str, frag
 
 @pytest.mark.parametrize("version", ["8.3", "8.10", "8"])
 def test_unquoted_version_is_rejected_with_a_hint(tmp_path: Path, version: str) -> None:
-    body = _product(f"{{repo: a-php, php: [{version}], arch: [amd64], ts: [nts]}}\n")
+    body = _product(f"{{repo: a-php, extension: a, php: [{version}], arch: [amd64], ts: [nts]}}\n")
     assert 'expected a string (quote numbers such as "8.3")' in _fail(tmp_path, body)
 
 
 def test_repeated_key_is_rejected(tmp_path: Path) -> None:
-    body = _product('{repo: a-php, php: ["8.3"], arch: [amd64], ts: [nts], ts: [zts]}\n')
+    body = _product(
+        '{repo: a-php, extension: a, php: ["8.3"], arch: [amd64], ts: [nts], ts: [zts]}\n'
+    )
     assert "duplicate key 'ts'" in _fail(tmp_path, body)
 
 
 def test_unknown_product_key_is_rejected(tmp_path: Path) -> None:
-    body = _product('{repo: a-php, php: ["8.3"], arch: [amd64], ts: [nts], tsx: [nts]}\n')
+    body = _product(
+        '{repo: a-php, extension: a, php: ["8.3"], arch: [amd64], ts: [nts], tsx: [nts]}\n'
+    )
     assert "unknown key 'tsx'" in _fail(tmp_path, body)
 
 
 def test_merge_key_is_rejected(tmp_path: Path) -> None:
-    body = _product('{repo: a-php, php: ["8.3"], arch: [amd64], ts: [nts], <<: {ts: [zts]}}\n')
+    body = _product(
+        '{repo: a-php, extension: a, php: ["8.3"], arch: [amd64], ts: [nts], <<: {ts: [zts]}}\n'
+    )
     assert "merge keys are not allowed" in _fail(tmp_path, body)
 
 
 @pytest.mark.parametrize("key", ["1", "true", "~", "[a]"])
 def test_non_string_keys_are_rejected(tmp_path: Path, key: str) -> None:
-    body = _product(f'{{repo: a-php, php: ["8.3"], arch: [amd64], ts: [nts], {key}: x}}\n')
+    body = _product(
+        f'{{repo: a-php, extension: a, php: ["8.3"], arch: [amd64], ts: [nts], {key}: x}}\n'
+    )
     assert "keys must be strings" in _fail(tmp_path, body)
 
 
 def test_python_object_tag_is_rejected(tmp_path: Path) -> None:
     body = _product(
-        '{repo: !!python/object:os.system a-php, php: ["8.3"], arch: [amd64], ts: [nts]}\n'
+        "{repo: !!python/object:os.system a-php, extension: a,"
+        ' php: ["8.3"], arch: [amd64], ts: [nts]}\n'
     )
     assert "expected a string" in _fail(tmp_path, body)
 
 
 def test_duplicate_product_is_rejected(tmp_path: Path) -> None:
-    one = '  - {repo: a-php, php: ["8.3"], arch: [amd64], ts: [nts]}\n'
+    one = '  - {repo: a-php, extension: a, php: ["8.3"], arch: [amd64], ts: [nts]}\n'
     assert "duplicate product 'a-php'" in _fail(tmp_path, f"products:\n{one}{one}")
 
 
@@ -160,24 +179,54 @@ def test_duplicate_product_is_rejected(tmp_path: Path) -> None:
     ],
 )
 def test_hostile_repo_names_are_rejected(tmp_path: Path, repo: str) -> None:
-    body = _product(f'{{repo: {repo}, php: ["8.3"], arch: [amd64], ts: [nts]}}\n')
+    body = _product(f'{{repo: {repo}, extension: a, php: ["8.3"], arch: [amd64], ts: [nts]}}\n')
     assert "invalid repo name" in _fail(tmp_path, body)
 
 
 def test_repo_longer_than_a_github_name_is_rejected(tmp_path: Path) -> None:
-    body = _product(f'{{repo: {"a" * 101}, php: ["8.3"], arch: [amd64], ts: [nts]}}\n')
+    body = _product(
+        f'{{repo: {"a" * 101}, extension: a, php: ["8.3"], arch: [amd64], ts: [nts]}}\n'
+    )
     assert "invalid repo name" in _fail(tmp_path, body)
 
 
-def _with_exclude(exclude: str) -> str:
-    return _product(
-        f'{{repo: a-php, php: ["8.3"], arch: [amd64], ts: [nts], exclude: {exclude}}}\n'
+@pytest.mark.parametrize(
+    "extension",
+    ['""', "Usearch", "use-arch", "use_arch", "use.arch", "1usearch", "usé", "a b", "x" * 33],
+)
+def test_hostile_extension_names_are_rejected(tmp_path: Path, extension: str) -> None:
+    body = _product(
+        f'{{repo: a-php, extension: {extension}, php: ["8.3"], arch: [amd64], ts: [nts]}}\n'
     )
+    assert "invalid extension name" in _fail(tmp_path, body)
+
+
+def test_duplicate_extension_is_rejected(tmp_path: Path) -> None:
+    first = '  - {repo: a-php, extension: a, php: ["8.3"], arch: [amd64], ts: [nts]}\n'
+    second = '  - {repo: b-php, extension: a, php: ["8.3"], arch: [amd64], ts: [nts]}\n'
+    assert "duplicate extension 'a'" in _fail(tmp_path, f"products:\n{first}{second}")
+
+
+def _with_exclude(exclude: str) -> str:
+    fields = 'repo: a-php, extension: a, php: ["8.3"], arch: [amd64], ts: [nts]'
+    return _product(f"{{{fields}, exclude: {exclude}}}\n")
 
 
 @pytest.mark.parametrize(
     "tag",
-    ["0.3.0", "v1", "v1.2", "v1.2.3.4", "v1.2.3-RC1", "v1.2.3-1", "v\\u06611.2.3", "v1.2.3\\n"],
+    [
+        "0.3.0",
+        "v1",
+        "v1.2",
+        "v1.2.3.4",
+        "v1.2.3-RC1",
+        "v1.2.3-1",
+        "v\\u06611.2.3",
+        "v1.2.3\\n",
+        "v01.2.3",
+        "v1.02.3",
+        "v1.2.03",
+    ],
 )
 def test_malformed_exclude_tags_are_rejected(tmp_path: Path, tag: str) -> None:
     assert "invalid release tag" in _fail(tmp_path, _with_exclude(f'["{tag}"]'))
@@ -239,7 +288,7 @@ def test_null_exclude_is_rejected(tmp_path: Path) -> None:
 
 def test_error_names_the_file_and_line(tmp_path: Path) -> None:
     body = VALID.replace("ts: [nts, zts]", "ts: [nts, both]")
-    assert _fail(tmp_path, body).startswith(f"{tmp_path / 'products.yml'}:10:")
+    assert _fail(tmp_path, body).startswith(f"{tmp_path / 'products.yml'}:12:")
 
 
 EXCLUDE_VALID = (
