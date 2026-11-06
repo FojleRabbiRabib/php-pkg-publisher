@@ -68,6 +68,21 @@ All notable changes to this project are documented here. The format follows
   refuses if the file changed meanwhile, writes nothing until every signature has passed, writes
   the signatures and `Release` world-readable (0644), and fails if it cannot stop the `gpg-agent`
   it started.
+- Generation publisher: turns a signed tree into the newest generation (`versions/<id>/apt` and
+  `rpm`) and flips `current` with a temporary symlink renamed into place. Hash-named files
+  (`by-hash/SHA256|SHA512/*`, `repodata/<sha256>-*`) are hard-linked into a shared store and
+  carried into every new tree while one of the last three generations lists them or they are
+  under seven days old, so an index fetched before a publish is still served after it; what a
+  generation lists is read from its own `Release` and `repomd.xml`. The new tree must resolve
+  every path named by the last three generations before the flip, `current` must be a link to a
+  generation, generations are ordered by a sequence number and not by the clock, and a crashed
+  run is cleaned up by the next one. Only the newest three trees are kept; a manifest of each
+  generation's content set (60 kept) feeds rollback and skips a publish when the content is
+  unchanged and under a day old. `rollback` rebuilds and re-signs an older content set as a new
+  generation and pins the site to it until the pin is cleared; it refuses a set that lists an
+  excluded release, and a release excluded later drops the pin and is never published. The new
+  tree is flushed to disk before the flip, a clean-up failure after the flip is reported and not
+  raised, and manifests and pins are read strictly (no boolean or NaN numbers, no links).
 - `products.yml` entries now require `extension`, the name inside package names
   (`php8.3-<extension>`); two products cannot share one.
 
