@@ -31,6 +31,7 @@ def _text(**changes: str | None) -> str:
     fields = {**VALID, **changes}
     lines = [f"{key}: {value}" for key, value in fields.items() if value is not None]
     lines.append('token: {file: /etc/pp/github.token, expires: "2027-01-31"}')
+    lines.append("alert: {file: /etc/pp/telegram.conf}")
     lines.append(
         f"signing: {{home: /var/lib/pp/gpg, fingerprint: {FPR}, "
         f"certificate: /etc/pp/cert.asc, primary: {PRIMARY}}}"
@@ -59,6 +60,7 @@ def test_a_valid_file_loads(tmp_path: Path) -> None:
     assert loaded.signing.fingerprint == FPR
     assert loaded.signing.primary == PRIMARY
     assert loaded.nudge == Path("/var/lib/pp/nudge/sync")
+    assert loaded.alert_file == Path("/etc/pp/telegram.conf")
 
 
 @pytest.mark.parametrize("key", list(VALID))
@@ -143,6 +145,7 @@ def test_a_bad_fingerprint_is_refused(tmp_path: Path, fingerprint: str) -> None:
         ),
         ("/etc/pp/github.token", "/var/lib/pp/cache/t", "token file must not be inside 'cache'"),
         ("/etc/pp/cert.asc", "/var/lib/pp/trust/c", "certificate must not be inside 'trust'"),
+        ("/etc/pp/telegram.conf", "/var/lib/pp/state/t", "alert file must not be inside 'state'"),
         (
             "nudge: /var/lib/pp/nudge/sync",
             "nudge: /var/lib/pp/gpg/sync",

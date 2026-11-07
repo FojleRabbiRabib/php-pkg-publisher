@@ -42,12 +42,22 @@ def raw_server(payload: bytes) -> Iterator[str]:
 def local_server(
     handler: Callable[[BaseHTTPRequestHandler], None],
 ) -> Iterator[tuple[str, list[dict[str, str]]]]:
-    """Serve GET with `handler`; yield the base URL and the request headers seen so far."""
+    """Serve GET and POST with `handler`; yield the base URL and the requests seen so far.
+
+    A POST entry also holds the request path (`:path`) and body (`:body`)."""
     seen: list[dict[str, str]] = []
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             seen.append({key.lower(): value for key, value in self.headers.items()})
+            handler(self)
+
+        def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length", "0"))
+            entry = {key.lower(): value for key, value in self.headers.items()}
+            entry[":path"] = self.path
+            entry[":body"] = self.rfile.read(length).decode("utf-8", errors="replace")
+            seen.append(entry)
             handler(self)
 
         def log_message(self, format: str, *args: Any) -> None:

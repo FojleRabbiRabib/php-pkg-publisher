@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from publisher import (
     admit,
+    alert,
     cache,
     config,
     feed,
@@ -24,10 +26,11 @@ from publisher import (
     verify,
 )
 from publisher.alert import clean
-from publisher.settings import load_settings
+from publisher.settings import Settings, load_settings
 
 FAULTS = (
     admit.StateError,
+    alert.AlertError,
     cache.CacheError,
     config.ConfigError,
     feed.FeedError,
@@ -54,8 +57,27 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _print_alerts(result: run.Result) -> None:
-    for alert in result.alerts:
-        print(f"alert {alert.kind}: {alert.text}", file=sys.stderr)
+    for item in result.alerts:
+        print(f"alert {item.kind}: {item.text}", file=sys.stderr)
+
+
+def _stderr(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
+
+
+def _emitter(settings: Settings) -> Callable[[run.Result], None]:
+    """Log each pass's alerts to the journal, then send them (the sender is built on first use)."""
+    dispatch = alert.Dispatcher(
+        lambda: alert.Telegram(alert.read_credentials(settings.alert_file)),
+        settings.state / "alerts.json",
+        log=_stderr,
+    )
+
+    def emit(result: run.Result) -> None:
+        _print_alerts(result)
+        dispatch(result.alerts, time.time())
+
+    return emit
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -63,7 +85,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         settings = load_settings(arguments.config)
         if arguments.command == "run":
-            results = run.run_once(settings, emit=_print_alerts)
+            results = run.run_once(settings, emit=_emitter(settings))
             failures = [r.failure for r in results if r.failure is not None]
             for failure in failures:
                 print(f"failed: {failure}", file=sys.stderr)

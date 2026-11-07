@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
 from publisher import admit, feed, generation, run, verify
+from publisher import alert as alert_module
 from publisher import lock as locking
 from publisher.__main__ import main
 from publisher.alert import MAX_TEXT, Alert, clean
@@ -201,6 +203,7 @@ def _settings(tmp_path: Path) -> Settings:
         + "".join(f"{n}: {tmp_path}/{n}\n" for n in ("site", "state", "cache", "trust", "work"))
         + f"lock: {tmp_path}/lock\nnudge: {tmp_path}/nudge/sync\nrpm_key: {tmp_path}/k.asc\n"
         f'token: {{file: {tmp_path}/t, expires: "2027-01-31"}}\n'
+        f"alert: {{file: {tmp_path}/a}}\n"
         f"signing: {{home: {tmp_path}/g, fingerprint: {'A' * 40}, "
         f"certificate: {tmp_path}/c, primary: {'B' * 40}}}\n"
     )
@@ -333,7 +336,35 @@ def test_a_publish_that_raises_after_a_stopped_admit_raises() -> None:
         _run(stages)
 
 
+class _FakeTelegram:
+    sent: ClassVar[list[str]] = []
+    fail: ClassVar[bool] = False
+
+    def __init__(self, credentials: object) -> None:
+        pass
+
+    def send(self, text: str, *, silent: bool) -> None:
+        if self.fail:
+            raise alert_module.DeliveryError("down")
+        self.sent.append(text)
+
+
+def _fake_telegram(monkeypatch: pytest.MonkeyPatch, *, fail: bool = False) -> None:
+    _FakeTelegram.sent = []
+    _FakeTelegram.fail = fail
+    monkeypatch.setattr(alert_module, "Telegram", _FakeTelegram)
+
+
+def _write_credentials(settings: Settings) -> None:
+    settings.alert_file.write_text(
+        "chat_id=5\ntoken=123456789:" + "A" * 30 + "\n", encoding="utf-8"
+    )
+    settings.alert_file.chmod(0o600)
+
+
 def _patch_run_once(monkeypatch: pytest.MonkeyPatch, results: list[run.Result]) -> None:
+    _fake_telegram(monkeypatch)
+
     def fake(settings: Settings, *, emit: object, **kwargs: object) -> list[run.Result]:
         for result in results:
             emit(result)  # type: ignore[operator]
@@ -345,7 +376,7 @@ def _patch_run_once(monkeypatch: pytest.MonkeyPatch, results: list[run.Result]) 
 def test_main_run_exits_one_on_a_failed_pass_and_prints_alerts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    _settings(tmp_path)
+    _write_credentials(_settings(tmp_path))
     failing = run.Result(alerts=(Alert(kind="stopped", text="x"),), failure="admit stopped: x")
     _patch_run_once(monkeypatch, [failing])
     assert main(["--config", str(tmp_path / "publisher.yml"), "run"]) == 1
@@ -357,11 +388,22 @@ def test_main_run_exits_one_on_a_failed_pass_and_prints_alerts(
 def test_main_run_exits_zero_when_only_tags_failed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    _settings(tmp_path)
+    _write_credentials(_settings(tmp_path))
     quiet = run.Result(alerts=(Alert(kind="admit-failed", text="t"),), failure=None)
     _patch_run_once(monkeypatch, [quiet])
     assert main(["--config", str(tmp_path / "publisher.yml"), "run"]) == 0
     assert "alert admit-failed: t" in capsys.readouterr().err
+    assert _FakeTelegram.sent == ["[admit-failed] t"]
+
+
+def test_main_stays_green_when_the_chat_service_is_down(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_credentials(_settings(tmp_path))
+    _patch_run_once(monkeypatch, [run.Result(alerts=(Alert(kind="k", text="t"),), failure=None)])
+    _fake_telegram(monkeypatch, fail=True)
+    assert main(["--config", str(tmp_path / "publisher.yml"), "run"]) == 0
+    assert "undelivered alert [k] t" in capsys.readouterr().err
 
 
 def test_main_turns_an_unexpected_exception_into_exit_one(
@@ -411,3 +453,17 @@ def test_log_lines_hold_no_raw_release_text() -> None:
     line = next(entry for entry in lines if entry.startswith("failed"))
     assert "\n" not in line
     assert "\x1b" not in line
+
+
+def test_an_unusable_alert_file_fails_the_run_after_the_alerts_were_logged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _settings(tmp_path)  # no credentials file was written
+    quiet = run.Result(alerts=(), failure=None)
+    _patch_run_once(monkeypatch, [run.Result(alerts=(Alert(kind="k", text="g1"),), failure=None)])
+    assert main(["--config", str(tmp_path / "publisher.yml"), "run"]) == 1
+    err = capsys.readouterr().err
+    assert "alert k: g1" in err
+    assert "failed:" in err
+    _patch_run_once(monkeypatch, [quiet])
+    assert main(["--config", str(tmp_path / "publisher.yml"), "run"]) == 1

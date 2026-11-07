@@ -18,6 +18,7 @@ has no defaults: a missing key stops the run before anything is touched.
     nudge:     /var/lib/php-pkg-publisher/nudge/sync
     rpm_key:   /etc/php-pkg-publisher/rpm-signing.asc
     token:     {file: /etc/php-pkg-publisher/github.token, expires: "2027-01-31"}
+    alert:     {file: /etc/php-pkg-publisher/telegram.conf}
     signing:   {home: ..., fingerprint: ..., certificate: ..., primary: ...}
 
 The six directories must be distinct and none may lie inside another, so a tree that a run
@@ -58,6 +59,7 @@ class Settings:
     rpm_key: Path
     token_file: Path
     token_expires: datetime.date
+    alert_file: Path
     signing: SigningKey
 
 
@@ -110,10 +112,12 @@ def load_settings(path: Path) -> Settings:
             "nudge",
             "rpm_key",
             "token",
+            "alert",
             "signing",
         ),
     )
     token = reader.mapping(top["token"], required=("file", "expires"))
+    alert = reader.mapping(top["alert"], required=("file",))
     signing = reader.mapping(
         top["signing"], required=("home", "fingerprint", "certificate", "primary")
     )
@@ -138,6 +142,7 @@ def load_settings(path: Path) -> Settings:
         "exclude": _path(reader, top["exclude"]),
         "rpm_key": _path(reader, top["rpm_key"]),
         "token file": _path(reader, token["file"]),
+        "alert file": _path(reader, alert["file"]),
         "certificate": key.certificate,
         "nudge": nudge,
     }
@@ -157,6 +162,7 @@ def load_settings(path: Path) -> Settings:
         nudge=nudge,
         rpm_key=singles["rpm_key"],
         token_file=singles["token file"],
+        alert_file=singles["alert file"],
         token_expires=_date(reader, token["expires"]),
         signing=key,
         **directories,

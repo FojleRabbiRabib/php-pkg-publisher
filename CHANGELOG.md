@@ -94,6 +94,20 @@ All notable changes to this project are documented here. The format follows
   the admit stage stopped, publishing failed or anything raised; a failed tag, a quarantine, a pin dropped by an exclusion
   and a clean-up failure after the flip alert without failing the run. Alert text is ASCII, capped
   and free of host paths and key fingerprints; a pinned site says so in every publish alert.
+- Operator alerts: each pass sends its alerts as plain-text Telegram messages (urgent first, split
+  into several messages instead of cut, at most five a pass) through the Bot API over https only,
+  with no proxy, redirect or retry, a bounded reply and a deadline. The credentials file
+  (`alert.file` in `publisher.yml`: `chat_id=` and `token=`, one line each) must be private to
+  the user, a regular file and not a link; the bot token is part of the request URL, so no error
+  text is built from the URL, errors are not chained and the token is scrubbed from every message.
+  An event that repeats on every full listing (`changed`, `vanished`) is said once a day; it is
+  remembered only after the message that carried it was accepted, and forgotten when a pass no
+  longer has it. A failed delivery never fails the run: every undelivered alert goes to the
+  journal in full and is tried again on the next run. The credentials are checked on every pass,
+  so a broken file fails the run before the day an alert is needed. `python -m
+  publisher.notifier --alert-file F --unit NAME` is the failure notifier for `OnFailure=`: it
+  imports only the sender, takes the path as its own argument and sends fixed text, so a broken
+  `publisher.yml` cannot silence it.
 - `products.yml` entries now require `extension`, the name inside package names
   (`php8.3-<extension>`); two products cannot share one.
 
