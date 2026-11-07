@@ -83,6 +83,17 @@ All notable changes to this project are documented here. The format follows
   excluded release, and a release excluded later drops the pin and is never published. The new
   tree is flushed to disk before the flip, a clean-up failure after the flip is reported and not
   raised, and manifests and pins are read strictly (no boolean or NaN numbers, no links).
+- Publisher settings and run command: `publisher.yml` (strict, no defaults, absolute normal paths,
+  the six working directories distinct and none inside another, no keys or pins inside a tree a
+  run rewrites) names where the publisher works and which keys it uses, and holds no secret.
+  `python -m publisher --config publisher.yml run | rollback ID | clear-pin` takes the run lock
+  and makes passes while nudges arrive; each pass refreshes the trusted root, admits, and then
+  publishes from what is admitted even if admitting stopped. Each pass reports its alerts as it
+  ends, so a later failing pass cannot lose them. A fault while setting up the admit stage (trusted
+  root, token, RPM key) stops only that stage, so the daily re-sign still runs. A run exits 1 when
+  the admit stage stopped, publishing failed or anything raised; a failed tag, a quarantine, a pin dropped by an exclusion
+  and a clean-up failure after the flip alert without failing the run. Alert text is ASCII, capped
+  and free of host paths and key fingerprints; a pinned site says so in every publish alert.
 - `products.yml` entries now require `extension`, the name inside package names
   (`php8.3-<extension>`); two products cannot share one.
 

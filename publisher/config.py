@@ -75,7 +75,7 @@ class ExclusionList:
     exclusions: tuple[Exclusion, ...]
 
 
-class _Reader:
+class Reader:
     """Validates nodes of one file and builds line-numbered errors."""
 
     def __init__(self, path: Path) -> None:
@@ -161,7 +161,7 @@ class _Reader:
         return tuple(values)
 
 
-def _open(path: Path) -> tuple[_Reader, Node, str]:
+def open_document(path: Path) -> tuple[Reader, Node, str]:
     try:
         with path.open("rb") as handle:
             raw = handle.read(MAX_FILE_BYTES + 1)
@@ -179,11 +179,11 @@ def _open(path: Path) -> tuple[_Reader, Node, str]:
         raise ConfigError(f"{path}: invalid YAML: {error}") from error
     if root is None:
         raise ConfigError(f"{path}: empty document")
-    return _Reader(path), root, hashlib.sha256(raw).hexdigest()
+    return Reader(path), root, hashlib.sha256(raw).hexdigest()
 
 
 def load_products(path: Path) -> ProductList:
-    reader, root, digest = _open(path)
+    reader, root, digest = open_document(path)
     top = reader.mapping(root, required=("products",))
     products: list[Product] = []
     for node in reader.sequence(top["products"]):
@@ -211,7 +211,7 @@ def load_products(path: Path) -> ProductList:
 
 
 def load_exclusions(path: Path, declared: ProductList) -> ExclusionList:
-    reader, root, digest = _open(path)
+    reader, root, digest = open_document(path)
     known = {product.repo for product in declared.products}
     top = reader.mapping(root, required=("exclude",))
     exclusions: list[Exclusion] = []
