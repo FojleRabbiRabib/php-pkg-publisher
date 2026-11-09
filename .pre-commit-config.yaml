@@ -29,6 +29,18 @@ repos:
         language: unsupported
         pass_filenames: false
         always_run: true
+      - id: phpcs
+        name: phpcs
+        entry: vendor/bin/phpcs
+        language: unsupported
+        types: [php]
+        pass_filenames: false
+      - id: phpstan
+        name: phpstan
+        entry: vendor/bin/phpstan analyse --no-progress
+        language: unsupported
+        types: [php]
+        pass_filenames: false
       - id: pytest
         name: pytest
         entry: pytest -q

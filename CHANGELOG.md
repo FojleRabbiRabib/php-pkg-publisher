@@ -128,6 +128,19 @@ All notable changes to this project are documented here. The format follows
   A start limit of five in ten minutes stops a failed run's restored nudge from restarting the
   publisher for ever. The notifier gets `%i`, because `%I` would turn the dashes of the unit name
   into slashes.
+- Webhook receiver `web/hooks/sync.php` (PHP 8.3, one file, no dependencies): answers a fixed
+  status with an empty body, checks in order the method (405), a per-address throttle of 20 posts
+  a minute (429), `Content-Length` and a 1 MiB body cap (413), the `X-Hub-Signature-256` HMAC
+  (401), the event and action (ping, other events and other actions get 200), the delivery GUID
+  (400 if malformed; a repeat inside 120 s gets 200 and no second nudge), then touches the nudge
+  file (202). The secret is read from `/etc/php-pkg-publisher-webhook/secret` and the state
+  (`thr/`, `guid/`, `sync`) lives in `/var/lib/php-pkg-publisher/nudge`. Both tables stop growing
+  at 1000 entries and stale entries are removed twenty at a time. A delivery is remembered only
+  after its nudge was made. PSR-12 (`phpcs.xml`, phpcs 4.0.4), PHPStan 2.3.5 at level max (`phpstan.neon`), both pinned in
+  `composer.json` and `composer.lock` and run by pre-commit, and a PHP-driven test file pin the
+  behaviour. The throttle keys an IPv4 address, or an IPv6 /64, whatever its spelling. A nudge
+  the receiver cannot open still counts as success (the publisher may have re-created it), a
+  link is refused, and a missing nudge directory is a 500: the operator creates it.
 - `products.yml` entries now require `extension`, the name inside package names
   (`php8.3-<extension>`); two products cannot share one.
 

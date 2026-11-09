@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright 2026 Fojle Rabbi (Rabib) -->
+<ruleset name="php-pkg-publisher">
+    <description>PSR-12 for the webhook receiver.</description>
+    <file>web</file>
+    <arg name="colors"/>
+    <arg value="sp"/>
+    <rule ref="PSR12"/>
+    <!-- sync.php declares its symbols and, last, serves the request; tests load it with a constant -->
+    <rule ref="PSR1.Files.SideEffects.FoundWithSymbols">
+        <exclude-pattern>web/hooks/sync.php</exclude-pattern>
+    </rule>
+</ruleset>
