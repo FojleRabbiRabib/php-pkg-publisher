@@ -1007,3 +1007,33 @@ def test_entries_that_list_an_excluded_release_are_refused(
     with pytest.raises(GenerationError, match="excluded release"):
         pipeline.publish(world.entries_b, time.time(), excluded={(REPO, "v1.1.0")})
     assert not pipeline.site.current.exists()
+
+
+def test_a_restrictive_umask_does_not_hide_the_served_tree(world: World, tmp_path: Path) -> None:
+    # the units run with UMask=0077 while the web server, another user, reads the site
+    root = tmp_path / "site"
+    root.mkdir(mode=0o755)
+    previous = os.umask(0o077)
+    try:
+        site = generation.open_site(root)
+        for tree, entries, when in (
+            (world.tree_a, world.entries_a, 1_000_000.0),
+            (world.tree_b, world.entries_b, 1_000_000.0 + 2 * DAY),
+        ):
+            copy = tmp_path / f"copy-{when}"
+            shutil.copytree(tree, copy, symlinks=True)
+            generation.install(site, copy, entries, now=when)
+    finally:
+        os.umask(previous)
+    hidden = []
+    # the store is private by design; the web server reads only the generations
+    for top in (site.versions,):
+        for path in [top, *top.rglob("*")]:
+            if path.is_symlink():
+                continue
+            mode = path.stat().st_mode
+            need = 0o005 if path.is_dir() else 0o004
+            if mode & need != need:
+                hidden.append(f"{path.relative_to(root)} {oct(stat.S_IMODE(mode))}")
+    assert hidden == [], "\n".join(hidden)
+    assert (site.root / "current").is_symlink()

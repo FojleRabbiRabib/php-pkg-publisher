@@ -34,6 +34,7 @@ others.
 |---|---|
 | `products.yml` | Shipped products only: `repo`, `extension`, `php`, `arch`, `ts` (all required, no defaults), optional `exclude` |
 | `publisher/` | The publisher package: the strict loader for `products.yml` and `exclude.yml`, the GitHub release feed client, the release asset cache, the release verifier, the admit stage (per-tag state, retries, quarantine), the run lock, the metadata builder, the signer, the generation publisher, the settings loader, the `run` command, the alert sender, the failure notifier and the hourly watch |
+| `deploy/systemd/` | The systemd units: publisher service, timer and nudge path unit, hourly watch, failure notifier |
 | `tools/` | Repository tooling, including the pin lint (`python tools/lint_pins.py [root]`) |
 | `tests/` | Unit tests (negative and container layers arrive with the publisher) |
 

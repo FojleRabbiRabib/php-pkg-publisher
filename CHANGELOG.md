@@ -119,6 +119,15 @@ All notable changes to this project are documented here. The format follows
   verify, when the served `InRelease` `Date` is older than 3 days (or in the future), when its
   `Valid-Until` is less than 7 days away, and when the file cannot be fetched or read. It uses its
   own alert memory and exits 1 on unusable settings or credentials.
+- systemd units in `deploy/systemd`: the publisher service (started by a daily 03:17 UTC timer and by
+  a path unit on the nudge file), the hourly watch service and timer, and a notifier template
+  that every service and the path unit name in `OnFailure=` with `%n`. All run as the
+  `php-pkg-publisher` user, one shot, with a start timeout (the notifier's is 60 seconds), a
+  strict file-system fence and no capabilities. The publisher alone may write the site tree; the
+  watch may write only the state directory; the notifier reads only `/etc/php-pkg-publisher`.
+  A start limit of five in ten minutes stops a failed run's restored nudge from restarting the
+  publisher for ever. The notifier gets `%i`, because `%I` would turn the dashes of the unit name
+  into slashes.
 - `products.yml` entries now require `extension`, the name inside package names
   (`php8.3-<extension>`); two products cannot share one.
 

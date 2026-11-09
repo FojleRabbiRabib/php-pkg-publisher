@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Fojle Rabbi (Rabib)
+[Unit]
+Description=Tell the operator that %i failed
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=php-pkg-publisher
+Group=php-pkg-publisher
+TimeoutStartSec=60
+WorkingDirectory=/opt/php-pkg-publisher
+Environment=PYTHONPATH=/opt/php-pkg-publisher PYTHONDONTWRITEBYTECODE=1
+# %i is the instance text as written (the unit name); %I would unescape its dashes into slashes.
+ExecStart=/usr/bin/python3 -s -m publisher.notifier --alert-file /etc/php-pkg-publisher/telegram.conf --unit %i
+ReadOnlyPaths=/etc/php-pkg-publisher
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
+UMask=0077
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Fojle Rabbi (Rabib)
+[Unit]
+Description=Run the publisher when the webhook receiver touches the nudge file
+OnFailure=php-pkg-publisher-notify@%n.service
+
+[Path]
+PathExists=/var/lib/php-pkg-publisher/nudge/sync
+Unit=php-pkg-publisher.service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Fojle Rabbi (Rabib)
+[Unit]
+Description=Verify new releases, then build and sign the package repository
+After=network-online.target
+Wants=network-online.target
+OnFailure=php-pkg-publisher-notify@%n.service
+# A failed run puts its nudge back, so the path unit starts it again at once; the limit stops
+# that loop after five starts in ten minutes (measured on systemd 249: the service goes to
+# start-limit-hit, the path unit fails and is reported too, and it watches again only after
+# `systemctl reset-failed` and `systemctl start php-pkg-publisher.path`). Real webhooks seldom
+# come close, because a run absorbs the nudges that arrive while it works.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+User=php-pkg-publisher
+Group=php-pkg-publisher
+TimeoutStartSec=1h
+WorkingDirectory=/opt/php-pkg-publisher
+Environment=PYTHONPATH=/opt/php-pkg-publisher PYTHONDONTWRITEBYTECODE=1 TMPDIR=/tmp
+ExecStart=/usr/bin/python3 -s -m publisher --config /etc/php-pkg-publisher/publisher.yml run
+# The site tree, and the state, cache, trust, work, lock, nudge and gpg home beside it.
+ReadWritePaths=/srv/pkg/site /var/lib/php-pkg-publisher
+ReadOnlyPaths=/etc/php-pkg-publisher
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
+UMask=0077
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
