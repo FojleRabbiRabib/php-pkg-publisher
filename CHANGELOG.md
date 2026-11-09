@@ -108,10 +108,24 @@ All notable changes to this project are documented here. The format follows
   publisher.notifier --alert-file F --unit NAME` is the failure notifier for `OnFailure=`: it
   imports only the sender, takes the path as its own argument and sends fixed text, so a broken
   `publisher.yml` cannot silence it.
+- Signing-subkey expiry alert: a publish that signs reports when the subkey (or the primary key,
+  whichever ends first) has fewer than 30 days left. The text also says when signing stops,
+  because the signer refuses a key that ends before the new `Valid-Until`, 14 days earlier. The
+  alert is urgent and repeats on each publish that signs, which happens at least daily.
+- Hourly watch, `python -m publisher.watch --config publisher.yml`: shares no schedule and no
+  publish module with the daily run. It alerts, once a day for each, when the GitHub token has
+  fewer than 30 days left (the date is in `publisher.yml`), when the origin certificate, read by
+  connecting to the origin address with the public name, has fewer than 21 days left or does not
+  verify, when the served `InRelease` `Date` is older than 3 days (or in the future), when its
+  `Valid-Until` is less than 7 days away, and when the file cannot be fetched or read. It uses its
+  own alert memory and exits 1 on unusable settings or credentials.
 - `products.yml` entries now require `extension`, the name inside package names
   (`php8.3-<extension>`); two products cannot share one.
 
 ### Changed
 
+- `publisher.yml` requires a `watch:` section (`host`: the public name, `origin`: the public IP
+  address of the origin). The settings loader no longer imports the signer, so the watch does not
+  load the publish modules.
 - Release tags may not have leading zeros in a number (`v01.0.0` is ignored), so two tags cannot
   map to one package version.

@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import re
 import shutil
 import tempfile
 import time
@@ -33,11 +32,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final
 
-from publisher import files, metadata, net
+from publisher import config, files, metadata, net
 from publisher.metadata import Built
 from publisher.tools import Result, ToolError, Tools, run
 
-FINGERPRINT: Final = re.compile(r"[0-9A-F]{40}")
 GPG_TIMEOUT_SECONDS: Final = 60.0
 MAX_HOME_BYTES: Final = 80  # a Unix socket path holds 107 bytes; the longest name adds 20
 DIGEST_ALGORITHM: Final = "SHA256"
@@ -131,7 +129,9 @@ def _packets(listing: str) -> list[_Packet]:
 
 
 def _validate_key(key: SigningKey) -> None:
-    if not FINGERPRINT.fullmatch(key.fingerprint) or not FINGERPRINT.fullmatch(key.primary):
+    if not config.FINGERPRINT.fullmatch(key.fingerprint) or not config.FINGERPRINT.fullmatch(
+        key.primary
+    ):
         raise SigningError("the key fingerprints must be 40 upper-case hex characters")
     if key.fingerprint == key.primary:
         raise SigningError("the signing key must be a subkey, not the primary key")

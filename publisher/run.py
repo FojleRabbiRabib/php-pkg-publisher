@@ -28,6 +28,7 @@ from publisher.alert import Alert, clean
 from publisher.cache import Cache, HttpsFetcher
 from publisher.lock import RunLock
 from publisher.settings import Settings
+from publisher.signer import SigningKey
 from publisher.tools import ToolError, Tools
 
 STAGE_ALERTS: Final[Mapping[str, tuple[str, bool]]] = {
@@ -39,6 +40,7 @@ STAGE_ALERTS: Final[Mapping[str, tuple[str, bool]]] = {
     "vanished": ("vanished", False),
 }
 SETUP_FAULTS: Final = (ToolError, feed.FeedError, verify.VerifyError, OSError)
+SUBKEY_WARNING_DAYS: Final = 30
 REPEATING: Final = frozenset({"changed", "vanished"})
 
 
@@ -60,6 +62,16 @@ class Stages(Protocol):
     def publish(
         self, products: config.ProductList, exclusions: config.ExclusionList, now: float
     ) -> generation.Published: ...
+
+
+def signing_key(settings: Settings) -> SigningKey:
+    pins = settings.signing
+    return SigningKey(
+        home=pins.home,
+        fingerprint=pins.fingerprint,
+        certificate=pins.certificate,
+        primary=pins.primary,
+    )
 
 
 def excluded_pairs(
@@ -118,6 +130,22 @@ def run_pass(
         log(f"published {published.generation}")
         held = "; pinned, new releases held" if published.pinned else ""
         alerts.append(Alert(kind="published", text=f"published {published.generation}{held}"))
+    if published.subkey_expires is not None:
+        left = (published.subkey_expires - now) / 86400
+        if left < SUBKEY_WARNING_DAYS:
+            # the signer refuses to sign once the key ends before the Release's Valid-Until
+            stops = max(left - metadata.VALID_SECONDS / 86400, 0)
+            alerts.append(
+                Alert(
+                    kind="subkey-expiring",
+                    text=(
+                        f"the signing subkey expires in {max(left, 0):.0f} days "
+                        f"and signing stops in {stops:.0f} days"
+                    ),
+                    urgent=True,
+                    key="subkey-expiring",
+                )
+            )
     if published.pin_dropped:
         alerts.append(
             Alert(
@@ -188,7 +216,7 @@ class LiveStages:
             entries,
             cache=self._cache,
             tools=self._tools,
-            key=self._settings.signing,
+            key=signing_key(self._settings),
             excluded=excluded_pairs(products, exclusions),
             now=now,
         )
@@ -254,7 +282,7 @@ def rollback(
             excluded=excluded_pairs(products, exclusions),
             cache=Cache(settings.cache, HttpsFetcher()),
             tools=Tools.locate(),
-            key=settings.signing,
+            key=signing_key(settings),
             now=time.time() if now is None else now,
         )
 

@@ -204,6 +204,7 @@ def _settings(tmp_path: Path) -> Settings:
         + f"lock: {tmp_path}/lock\nnudge: {tmp_path}/nudge/sync\nrpm_key: {tmp_path}/k.asc\n"
         f'token: {{file: {tmp_path}/t, expires: "2027-01-31"}}\n'
         f"alert: {{file: {tmp_path}/a}}\n"
+        "watch: {host: pkg.example.org, origin: 93.184.216.34}\n"
         f"signing: {{home: {tmp_path}/g, fingerprint: {'A' * 40}, "
         f"certificate: {tmp_path}/c, primary: {'B' * 40}}}\n"
     )
@@ -467,3 +468,40 @@ def test_an_unusable_alert_file_fails_the_run_after_the_alerts_were_logged(
     assert "failed:" in err
     _patch_run_once(monkeypatch, [quiet])
     assert main(["--config", str(tmp_path / "publisher.yml"), "run"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("days", "alerts"),
+    [(29.5, True), (0.0, True), (-3.0, True), (30.0, False), (200.0, False)],
+)
+def test_the_subkey_alert_fires_under_thirty_days(days: float, alerts: bool) -> None:
+    stages = FakeStages(
+        published=generation.Published(
+            generation="00000002-20260101T000000Z",
+            skipped=False,
+            pinned=False,
+            subkey_expires=1.0 + days * 86400,
+        )
+    )
+    result, _ = _run(stages)
+    assert ("subkey-expiring" in _kinds(result)) is alerts
+    if alerts:
+        alert = next(a for a in result.alerts if a.kind == "subkey-expiring")
+        assert alert.urgent
+        assert alert.key == "subkey-expiring"
+        assert "signing stops in" in alert.text
+        assert result.failure is None
+
+
+def test_the_subkey_alert_names_the_day_signing_stops() -> None:
+    stages = FakeStages(
+        published=generation.Published(
+            generation="00000002-20260101T000000Z",
+            skipped=False,
+            pinned=False,
+            subkey_expires=1.0 + 25 * 86400,
+        )
+    )
+    result, _ = _run(stages)
+    (alert,) = (a for a in result.alerts if a.kind == "subkey-expiring")
+    assert alert.text == "the signing subkey expires in 25 days and signing stops in 11 days"

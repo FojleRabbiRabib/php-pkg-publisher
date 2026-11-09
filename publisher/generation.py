@@ -25,6 +25,7 @@ temporary symlink renamed over `current`, never `ln -sfn`. The caller holds the 
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import hashlib
 import json
 import math
@@ -115,6 +116,7 @@ class Published:
     pinned: bool
     pin_dropped: bool = False
     retire_error: str | None = None
+    subkey_expires: float | None = None
 
 
 def _fail(message: str, error: OSError) -> GenerationError:
@@ -629,6 +631,7 @@ class Installed:
 
     generation: str
     retire_error: str | None
+    subkey_expires: float | None = None
 
 
 def install(
@@ -679,8 +682,9 @@ def _build_and_install(
         built = metadata.build(
             entries, cache=cache, tools=tools, target=stage / "tree", work=stage / "work"
         )
-        signer.sign(stage / "tree", built, key, tools=tools, work=stage / "work")
-        return install(site, stage / "tree", entries, now=now, sweep=False)
+        signed = signer.sign(stage / "tree", built, key, tools=tools, work=stage / "work")
+        done = install(site, stage / "tree", entries, now=now, sweep=False)
+        return dataclasses.replace(done, subkey_expires=signed.subkey_expires)
     except OSError as error:
         raise _fail("cannot stage the build", error) from error
     finally:
@@ -732,6 +736,7 @@ def publish(
         pinned=hold is not None,
         pin_dropped=dropped,
         retire_error=done.retire_error,
+        subkey_expires=done.subkey_expires,
     )
 
 
@@ -767,5 +772,9 @@ def rollback(
         raise _fail("cannot write the pin", error) from error
     done = _build_and_install(site, wanted, cache=cache, tools=tools, key=key, now=now)
     return Published(
-        generation=done.generation, skipped=False, pinned=True, retire_error=done.retire_error
+        generation=done.generation,
+        skipped=False,
+        pinned=True,
+        retire_error=done.retire_error,
+        subkey_expires=done.subkey_expires,
     )

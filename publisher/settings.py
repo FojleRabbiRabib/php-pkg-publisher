@@ -20,6 +20,7 @@ has no defaults: a missing key stops the run before anything is touched.
     token:     {file: /etc/php-pkg-publisher/github.token, expires: "2027-01-31"}
     alert:     {file: /etc/php-pkg-publisher/telegram.conf}
     signing:   {home: ..., fingerprint: ..., certificate: ..., primary: ...}
+    watch:     {host: pkg.example.org, origin: <public IPv4 of the origin>}
 
 The six directories must be distinct and none may lie inside another, so a tree that a run
 removes or rewrites can never be the one that holds the lock, the state or the keys.
@@ -28,6 +29,7 @@ removes or rewrites can never be the one that holds the lock, the state or the k
 from __future__ import annotations
 
 import datetime
+import ipaddress
 import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -37,11 +39,31 @@ from yaml.nodes import Node
 
 from publisher import config
 from publisher.config import ConfigError, Reader
-from publisher.signer import FINGERPRINT, SigningKey
 
 MAX_PATH_BYTES: Final = 200
 DATE: Final = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+HOST: Final = re.compile(
+    r"(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?"
+)
 DIRECTORIES: Final = ("site", "state", "cache", "trust", "work", "lock")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SigningPins:
+    """Where the signing subkey lives and the public pins it is checked against."""
+
+    home: Path
+    fingerprint: str
+    certificate: Path
+    primary: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WatchTarget:
+    """The public name the clients use and the address of the origin behind it."""
+
+    host: str
+    origin: str
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -60,7 +82,8 @@ class Settings:
     token_file: Path
     token_expires: datetime.date
     alert_file: Path
-    signing: SigningKey
+    signing: SigningPins
+    watch: WatchTarget
 
 
 def _path(reader: Reader, node: Node) -> Path:
@@ -92,8 +115,26 @@ def _date(reader: Reader, node: Node) -> datetime.date:
 
 def _fingerprint(reader: Reader, node: Node) -> str:
     text = reader.string(node)
-    if not FINGERPRINT.fullmatch(text):
+    if not config.FINGERPRINT.fullmatch(text):
         raise reader.fail(node, "expected 40 uppercase hexadecimal digits")
+    return text
+
+
+def _host(reader: Reader, node: Node) -> str:
+    text = reader.string(node)
+    if not HOST.fullmatch(text):
+        raise reader.fail(node, "expected a lower-case host name such as pkg.example.org")
+    return text
+
+
+def _address(reader: Reader, node: Node) -> str:
+    text = reader.string(node)
+    try:
+        address = ipaddress.ip_address(text)
+    except ValueError as error:
+        raise reader.fail(node, f"invalid address {text!r}") from error
+    if str(address) != text or not address.is_global:
+        raise reader.fail(node, "expected a public IP address in its shortest form")
     return text
 
 
@@ -114,8 +155,10 @@ def load_settings(path: Path) -> Settings:
             "token",
             "alert",
             "signing",
+            "watch",
         ),
     )
+    watch = reader.mapping(top["watch"], required=("host", "origin"))
     token = reader.mapping(top["token"], required=("file", "expires"))
     alert = reader.mapping(top["alert"], required=("file",))
     signing = reader.mapping(
@@ -131,7 +174,7 @@ def load_settings(path: Path) -> Settings:
                     top[other], f"{other!r} must not be the same as or inside {name!r}"
                 )
     nudge = _path(reader, top["nudge"])
-    key = SigningKey(
+    key = SigningPins(
         home=_path(reader, signing["home"]),
         fingerprint=_fingerprint(reader, signing["fingerprint"]),
         certificate=_path(reader, signing["certificate"]),
@@ -165,6 +208,9 @@ def load_settings(path: Path) -> Settings:
         alert_file=singles["alert file"],
         token_expires=_date(reader, token["expires"]),
         signing=key,
+        watch=WatchTarget(
+            host=_host(reader, watch["host"]), origin=_address(reader, watch["origin"])
+        ),
         **directories,
     )
 

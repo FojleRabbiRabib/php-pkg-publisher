@@ -31,6 +31,7 @@ ARCHITECTURES: Final = frozenset({"amd64", "arm64"})
 PHP_VERSIONS: Final = frozenset({"8.3", "8.4", "8.5"})
 THREAD_SAFETY: Final = frozenset({"nts", "zts"})
 
+FINGERPRINT: Final = re.compile(r"[0-9A-F]{40}")
 EXTENSION_NAME: Final = re.compile(r"[a-z][a-z0-9]{0,31}")
 REPO_NAME: Final = re.compile(r"[a-z0-9](?:[a-z0-9._-]{0,98}[a-z0-9_-])?")
 _NUMBER = r"(?:0|[1-9][0-9]*)"

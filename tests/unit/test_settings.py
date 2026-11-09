@@ -36,6 +36,7 @@ def _text(**changes: str | None) -> str:
         f"signing: {{home: /var/lib/pp/gpg, fingerprint: {FPR}, "
         f"certificate: /etc/pp/cert.asc, primary: {PRIMARY}}}"
     )
+    lines.append("watch: {host: pkg.example.org, origin: 93.184.216.34}")
     return "\n".join(lines) + "\n"
 
 
@@ -61,6 +62,8 @@ def test_a_valid_file_loads(tmp_path: Path) -> None:
     assert loaded.signing.primary == PRIMARY
     assert loaded.nudge == Path("/var/lib/pp/nudge/sync")
     assert loaded.alert_file == Path("/etc/pp/telegram.conf")
+    assert loaded.watch.host == "pkg.example.org"
+    assert loaded.watch.origin == "93.184.216.34"
 
 
 @pytest.mark.parametrize("key", list(VALID))
@@ -157,3 +160,47 @@ def test_a_file_inside_a_working_directory_is_refused(
     tmp_path: Path, old: str, new: str, message: str
 ) -> None:
     assert message in _fail(tmp_path, _text().replace(old, new))
+
+
+def test_a_missing_watch_section_is_refused(tmp_path: Path) -> None:
+    text = _text().replace("watch: {host: pkg.example.org, origin: 93.184.216.34}\n", "")
+    assert "missing required key 'watch'" in _fail(tmp_path, text)
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "localhost",
+        "PKG.example.org",
+        "pkg..example.org",
+        "-a.example.org",
+        "a b.example.org",
+        "https://pkg.example.org",
+        "pkg.example.org/",
+        "pkg.example.org:443",
+        "1.2.3.4",
+    ],
+)
+def test_a_bad_watch_host_is_refused(tmp_path: Path, host: str) -> None:
+    text = _text().replace("host: pkg.example.org", f'host: "{host}"')
+    assert "host name" in _fail(tmp_path, text)
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "127.0.0.1",
+        "10.0.0.1",
+        "192.168.1.1",
+        "169.254.1.1",
+        "0.0.0.0",  # noqa: S104
+        "::1",
+        "203.000.113.7",
+        "pkg.example.org",
+        "203.0.113",
+        "2001:DB8::1",
+    ],
+)
+def test_a_bad_watch_origin_is_refused(tmp_path: Path, origin: str) -> None:
+    text = _text().replace("origin: 93.184.216.34", f'origin: "{origin}"')
+    assert "address" in _fail(tmp_path, text)
