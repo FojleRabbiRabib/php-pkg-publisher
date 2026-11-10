@@ -141,6 +141,13 @@ All notable changes to this project are documented here. The format follows
   behaviour. The throttle keys an IPv4 address, or an IPv6 /64, whatever its spelling. A nudge
   the receiver cannot open still counts as success (the publisher may have re-created it), a
   link is refused, and a missing nudge directory is a 500: the operator creates it.
+- OpenLiteSpeed docroot `.htaccess` template, `web/docroot.htaccess`: three rules and nothing
+  else. A request line that names a `.php` file, also written with percent-escapes (`.p%68p`,
+  `%2ephp`, `.php%2fx`), is a 404; `/hooks/sync` is served by the
+  receiver; `/pool/<product>/<tag>/<file>` and `/apt/pool/...` are a 302 to the GitHub release
+  asset under one fixed owner. The patterns are allow-lists held to the publisher's own repo name,
+  release tag and asset name rules (compared character for character by a test), and reject
+  uppercase products, dot segments, leading zeros and encoded slashes.
 - `products.yml` entries now require `extension`, the name inside package names
   (`php8.3-<extension>`); two products cannot share one.
 
