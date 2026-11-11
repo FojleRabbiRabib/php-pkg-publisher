@@ -17,26 +17,23 @@ dnf configuration lists both, so this layer does not show that each is needed fo
 
 from __future__ import annotations
 
-import re
 import shutil
 import time
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from box import Box, Done, docker_available
+from box import Box, docker_available
+from clients import Apt, Dnf, publish
 from conftest import client
 from images import IMAGES, Image
 from mirror import Mirror
 from rig import Rig, product
 
-from publisher.config import Product
-
 pytestmark = pytest.mark.container
 
 FIRST = "v1.0.0"
 SECOND = "v1.1.0"
-BASE_RPM = "php-a"
 PHP_VERSIONS = ("8.3", "8.4", "8.5")
 
 
@@ -62,94 +59,6 @@ def _kit(directory: Path, rig: Rig, mirror: Mirror, php: str) -> Path:
     return directory
 
 
-def _publish(rig: Rig, who: Product, tag: str, now: float) -> str:
-    files = rig.kit.release(who, tag)
-    rig.feed.add(who.repo, tag, files)
-    result = rig.run_pass(now)
-    assert result.failure is None
-    return rig.current_id()
-
-
-class Apt:
-    OPTIONS = ("-o", "Dir::Etc::SourceList=/dev/null", "-o", "Dir::Etc::SourceParts=/kit/apt.d")
-
-    def __init__(self, box: Box, php: str) -> None:
-        self.box = box
-        self.package = f"php{php}-a"
-
-    def update(self) -> Done:
-        return self.box.run("apt-get", *self.OPTIONS, "update")
-
-    def install(self) -> Done:
-        return self.box.run("apt-get", *self.OPTIONS, "install", "-y", self.package)
-
-    def listed(self) -> set[str]:
-        """The versions the repository offers, as `apt-cache madison` lists them."""
-        done = self.box.run("apt-cache", *self.OPTIONS, "madison", self.package)
-        assert done.code == 0, done.output
-        return {line.split("|")[1].strip() for line in done.output.splitlines() if "|" in line}
-
-    def installed(self) -> str:
-        return self.box.run("dpkg-query", "-W", "-f=${Version}", self.package).output
-
-    @staticmethod
-    def refused(done: Done) -> bool:
-        """apt exits 0 for a refused index ("the repository is not updated"), so read the error."""
-        text = done.output.lower()
-        return done.code != 0 or ("err:" in text and "signature" in text)
-
-    @staticmethod
-    def version(tag: str) -> str:
-        return tag.removeprefix("v") + "-1"
-
-
-class Dnf:
-    OPTIONS = ("-y", "--setopt=reposdir=/kit/repos.d")
-
-    def __init__(self, box: Box, php: str) -> None:
-        self.box = box
-        self.versioned = f"php{php.replace('.', '')}-php-a"
-
-    def update(self) -> Done:
-        return self.box.run("dnf", *self.OPTIONS, "makecache", "--refresh")
-
-    def install(self) -> Done:
-        return self.box.run("dnf", *self.OPTIONS, "install", BASE_RPM, self.versioned)
-
-    def upgrade(self) -> Done:
-        return self.box.run("dnf", *self.OPTIONS, "upgrade", BASE_RPM, self.versioned)
-
-    def listed(self) -> set[str]:
-        """The versions the repository offers, as `dnf repoquery` lists them."""
-        done = self.box.run(
-            "dnf",
-            *self.OPTIONS,
-            "repoquery",
-            "--available",
-            "--queryformat",
-            "%{version}\n",
-            BASE_RPM,
-        )
-        assert done.code == 0, done.output
-        return {
-            line.strip()
-            for line in done.output.splitlines()
-            if re.fullmatch(r"\d+\.\d+\.\d+", line.strip())
-        }
-
-    def installed(self) -> str:
-        return self.box.run("rpm", "-q", "--qf", "%{VERSION}", BASE_RPM).output
-
-    @staticmethod
-    def refused(done: Done) -> bool:
-        """dnf5 reports a bad `repomd.xml` signature and still exits 0, so read the error too."""
-        return done.code != 0 or "gpg signature verification error" in done.output.lower()
-
-    @staticmethod
-    def version(tag: str) -> str:
-        return tag.removeprefix("v")
-
-
 @pytest.fixture(scope="session", autouse=True)
 def _docker() -> None:
     assert docker_available(), "the container layer needs a running docker"
@@ -164,7 +73,7 @@ def test_a_real_client_installs_upgrades_follows_a_rollback_and_refuses_tamperin
     who = product("a-php", "a", php)
     rig = make_rig(who)
     now = time.time()
-    first_id = _publish(rig, who, FIRST, now)
+    first_id = publish(rig, who, FIRST, now)
     with Mirror(rig) as mirror, Box(image, _kit(tmp_path / "kit", rig, mirror, php)) as box:
         tool: Apt | Dnf = Apt(box, php) if image.family == "apt" else Dnf(box, php)
         # install, through the redirect
@@ -176,7 +85,7 @@ def test_a_real_client_installs_upgrades_follows_a_rollback_and_refuses_tamperin
         assert tool.installed() == tool.version(FIRST)
         assert any(f"/releases/download/{FIRST}/" in url for url in mirror.redirects)
         # a new release whose metadata has one flipped byte: refused, never offered
-        _publish(rig, who, SECOND, now + 60)
+        publish(rig, who, SECOND, now + 60)
         mirror.tamper = (
             {"apt/dists/stable/InRelease", "apt/dists/stable/Release"}
             if isinstance(tool, Apt)

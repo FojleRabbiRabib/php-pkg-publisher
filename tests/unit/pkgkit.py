@@ -110,7 +110,16 @@ def _gpg(tools: Tools, key: Key, *args: str | Path, home: Path | None = None) ->
 
 def add_signing_subkey(tools: Tools, key: Key, root: Path, name: str) -> Key:
     """Add a second signing subkey (a rotation target) and write the updated public certificate."""
-    _gpg(tools, key, "--quick-add-key", key.primary_fingerprint, "rsa3072", "sign", "1y")
+    return _add_subkey(tools, key, root, name, "sign")
+
+
+def add_encryption_subkey(tools: Tools, key: Key, root: Path, name: str) -> Key:
+    """Add a valid subkey that cannot sign; `subkey_fingerprint` of the result is that subkey."""
+    return _add_subkey(tools, key, root, name, "encr")
+
+
+def _add_subkey(tools: Tools, key: Key, root: Path, name: str, usage: str) -> Key:
+    _gpg(tools, key, "--quick-add-key", key.primary_fingerprint, "rsa3072", usage, "1y")
     listing = _gpg(tools, key, "--with-colons", "--fixed-list-mode", "--list-keys")
     lines = listing.splitlines()
     indexes = [i for i, line in enumerate(lines) if line.startswith("sub")]
@@ -124,6 +133,19 @@ def add_signing_subkey(tools: Tools, key: Key, root: Path, name: str) -> Key:
         subkey_fingerprint=lines[newest + 1].split(":")[9],
         primary_fingerprint=key.primary_fingerprint,
     )
+
+
+def with_second_subkey(tools: Tools, key: Key, root: Path, name: str) -> Key:
+    """Clone the key into a new home and add a second signing subkey there, leaving `key` as is.
+
+    The result's `subkey_fingerprint` is the new subkey; `public` holds the primary and both.
+    """
+    exported = root / f"{name}-secret.gpg"
+    _gpg(tools, key, "--export-secret-keys", "--output", exported)
+    home = root / name
+    home.mkdir(mode=0o700)
+    _gpg(tools, key, "--import", exported, home=home)
+    return add_signing_subkey(tools, dataclasses.replace(key, home=home), root, name)
 
 
 def subkeys_only(tools: Tools, key: Key, root: Path, name: str) -> Key:

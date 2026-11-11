@@ -177,6 +177,32 @@ All notable changes to this project are documented here. The format follows
   `pytest -m container`. Both jobs share one local setup action (Python 3.10, the hash-pinned
   development tools and the verification tools, `cosign` by checksum). Shell checks join when
   `setup.sh` lands.
+- Keyring packages and their builder, `tools/build_keyring.py` with the sources in `keyring/`:
+  `rabib-archive-keyring` (a deb for apt) and `rabib-release` (a noarch rpm for dnf), built from a
+  public certificate, a primary fingerprint and the repository and RPM signing subkeys, with
+  versions like `2026.1`. The apt keyring holds the primary key and the repository subkeys only, so
+  apt trusts no signature by the RPM subkey and a key rotation needs no change to the sources
+  entry. The rpm installs `RPM-GPG-KEY-rabib` with the primary key and both subkeys and deletes the
+  `rabib-*` repository key caches of dnf and dnf5 after a transaction, which EL10 and Fedora need
+  after a key change. It does not import the key: rpm 6 (Fedora 44) cannot import inside a
+  transaction, and dnf imports the key from the `.repo` file. The builder refuses secret key
+  material, a wrong primary fingerprint, a missing, expired or revoked key, a subkey that cannot
+  sign, a subkey named for both jobs, a bad version, and a maintainer outside `Name <address>` (a
+  `%` is refused, because `rpmbuild` would run a `%(command)` in the changelog). Nothing is left
+  in the output on failure: files are staged before any rename, and a directory the run created is
+  removed. It reads the exported keys back and requires the exact set. It signs the rpm with
+  exactly one RPM subkey from an offline key home, checks the result against the certificate and
+  the key id, and stops the gpg-agent it started; or it builds unsigned. The packages are
+  byte-identical for the same inputs and carry `LICENSE` and `NOTICE`; the output holds each
+  package under its versioned name and under a fixed name (`rabib-archive-keyring.deb`,
+  `rabib-release.rpm`) that is always the newest. `lintian --pedantic` reports only the
+  `.gpg` extension, which is the name Debian's own archive keyrings use; `rpmlint` reports only the
+  key file under `/etc` that is not a config file (a rotation must replace it) and the `rm` of the
+  fixed cache glob. The container layer installs the built packages in each of the nine images,
+  points `Signed-By:` or `gpgkey=` at the key file the package installed, and checks that the
+  published metadata verifies; on dnf it also checks that an install and an upgrade of the keyring
+  remove the key caches of a `rabib-` repository and keep those of another, and that the signed
+  rpm verifies with the distribution's own `rpmkeys` against the installed key file.
 - `products.yml` entries now require `extension`, the name inside package names
   (`php8.3-<extension>`); two products cannot share one.
 

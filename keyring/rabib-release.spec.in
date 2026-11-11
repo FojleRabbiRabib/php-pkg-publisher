@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Fojle Rabbi (Rabib)
+# Filled in by tools/build_keyring.py: the tokens between at-signs are replaced before rpmbuild.
+Name:           rabib-release
+Version:        @VERSION@
+Release:        1
+Summary:        Package signing keys of the Rabib PHP extension repository
+License:        Apache-2.0
+URL:            https://pkg.rabib.me
+Source0:        RPM-GPG-KEY-rabib
+Source1:        LICENSE
+Source2:        NOTICE
+BuildArch:      noarch
+
+%description
+The public keys that verify the repository metadata and the packages of the
+Rabib PHP extension repository, installed in the system key directory.
+
+%prep
+%setup -c -T
+cp %{SOURCE1} %{SOURCE2} .
+
+%build
+
+%install
+install -D -m 0644 %{SOURCE0} %{buildroot}/etc/pki/rpm-gpg/RPM-GPG-KEY-rabib
+
+%posttrans
+# There is no import into the rpm database: rpm 6 (Fedora 44) cannot import a key inside a
+# transaction, and dnf imports the key from the repository file by itself.
+# dnf keeps the first repository key it imported for a repository: EL10 and Fedora keep
+# failing with "Signing key not found" after a key change until this cache is deleted.
+rm -rf -- /var/cache/dnf/rabib-*/pubring /var/cache/libdnf5/rabib-*/pubring
+
+%files
+%license LICENSE
+%doc NOTICE
+# Not a config file: a key rotation must be able to replace it, as the distribution key
+# packages do. The rpmlint hints non-conffile-in-etc and dangerous-command-in-posttrans (rm of
+# a fixed glob) are deliberate.
+%attr(0644,root,root) /etc/pki/rpm-gpg/RPM-GPG-KEY-rabib
+
+%changelog
+* @DATE@ @MAINTAINER@ - @VERSION@-1
+- Keyring release @VERSION@.

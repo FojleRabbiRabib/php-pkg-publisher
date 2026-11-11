@@ -36,8 +36,9 @@ others.
 | `publisher/` | The publisher package: the strict loader for `products.yml` and `exclude.yml`, the GitHub release feed client, the release asset cache, the release verifier, the admit stage (per-tag state, retries, quarantine), the run lock, the metadata builder, the signer, the generation publisher, the settings loader, the `run` command, the alert sender, the failure notifier and the hourly watch |
 | `deploy/systemd/` | The systemd units: publisher service, timer and nudge path unit, hourly watch, failure notifier |
 | `web/` | The webhook receiver (`hooks/sync.php`: verifies a GitHub release delivery and touches the nudge file) and the docroot `.htaccess` template (`docroot.htaccess`: the receiver route, the `.php` block and the 302 to GitHub Releases) |
-| `tools/` | Repository tooling, including the pin lint (`python tools/lint_pins.py [root]`) |
-| `tests/` | Unit tests, and the negative layer (`tests/negative/`: whole passes over throwaway keys and real packages that must fail closed, read back with `gpgv`); and the container layer (`tests/container/`, `pytest -m container`: a real `apt` or `dnf` of each distribution installs, upgrades and follows a rollback, and refuses tampered metadata) |
+| `keyring/` | The sources of the two keyring packages, `rabib-archive-keyring` (apt) and `rabib-release` (dnf): a spec template and the Debian copyright file. `tools/build_keyring.py` builds both from a public certificate; the keys are not in this repository |
+| `tools/` | Repository tooling: the pin lint (`python tools/lint_pins.py [root]`) and the keyring builder (`python tools/build_keyring.py --help`) |
+| `tests/` | Unit tests, and the negative layer (`tests/negative/`: whole passes over throwaway keys and real packages that must fail closed, read back with `gpgv`); and the container layer (`tests/container/`, `pytest -m container`: a real `apt` or `dnf` of each distribution installs, upgrades and follows a rollback, and refuses tampered metadata, and installs the built keyring packages and trusts the key file they install) |
 
 ## Development
 

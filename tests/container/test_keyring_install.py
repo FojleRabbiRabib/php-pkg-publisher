@@ -1,0 +1,239 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Fojle Rabbi (Rabib)
+"""The keyring packages installed by a real `apt` or `dnf` of each distribution.
+
+The packages come from `tools/build_keyring.py` over a certificate that has the design's shape:
+one master, the repository subkey that signs the tree, and a second subkey for the RPM job. The
+client is pointed at the key file the package installed, never at a key in the kit, so the test
+shows that the installed key alone verifies the published metadata. On dnf the repository id
+starts with `rabib-`, so the cache clean-up of `rabib-release` has something to remove: the test
+makes the key caches of a `rabib-` repository and of another repository, installs the keyring and
+then an upgrade of it, and expects only the `rabib-` caches to go each time. The full rotation of
+the signing subkey is the key drill, not this test.
+"""
+
+from __future__ import annotations
+
+import shutil
+import time
+from collections.abc import Callable, Iterator
+from pathlib import Path
+
+import build_keyring
+import pytest
+from box import Box, docker_available
+from clients import Apt, Dnf, publish
+from images import IMAGES, Image
+from mirror import Mirror
+from pkgkit import stop_agent, with_second_subkey
+from rig import Kit, Rig, product
+
+pytestmark = pytest.mark.container
+
+PHP = "8.3"
+TAG = "v1.0.0"
+VERSIONS = ("2026.1", "2026.2")
+MAINTAINER = "Test Maintainer <maintainer@example.invalid>"
+EPOCH = 1780000000
+DEB_KEY = "/usr/share/keyrings/rabib-archive-keyring.gpg"
+RPM_KEY = "/etc/pki/rpm-gpg/RPM-GPG-KEY-rabib"
+CACHES = {
+    "rabib": ("/var/cache/dnf/rabib-test-0123abcd", "/var/cache/libdnf5/rabib-test-0123abcd"),
+    "other": ("/var/cache/dnf/other-0123abcd", "/var/cache/libdnf5/other-0123abcd"),
+}
+
+
+def _deb(version: str) -> str:
+    return f"rabib-archive-keyring_{version}_all.deb"
+
+
+def _rpm(version: str) -> str:
+    return f"rabib-release-{version}-1.noarch.rpm"
+
+
+@pytest.fixture(scope="module")
+def packages(kit: Kit, tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
+    """Both keyring versions, built from one certificate whose repo subkey signs the tree."""
+    root = tmp_path_factory.mktemp("keyring")
+    cert = with_second_subkey(kit.tools, kit.master, root, "cert")
+    directory = root / "packages"
+    directory.mkdir()
+    try:
+        for version in VERSIONS:
+            output = root / f"out-{version}"
+            code = build_keyring.main(
+                [
+                    *("--key", str(cert.public)),
+                    *("--fingerprint", cert.primary_fingerprint.upper()),
+                    *("--repo-subkey", kit.master.subkey_fingerprint.upper()),
+                    *("--rpm-subkey", cert.subkey_fingerprint.upper()),
+                    *("--version", version),
+                    *("--maintainer", MAINTAINER),
+                    *("--source-date-epoch", str(EPOCH)),
+                    *("--output", str(output)),
+                    "--unsigned",
+                ]
+            )
+            assert code == 0
+            for name in (_deb(version), _rpm(version)):
+                shutil.copy(output / name, directory / name)
+        # the rpm that ships is signed by the RPM subkey: one signed copy for the clients to check
+        signed = root / "out-signed"
+        code = build_keyring.main(
+            [
+                *("--key", str(cert.public)),
+                *("--fingerprint", cert.primary_fingerprint.upper()),
+                *("--repo-subkey", kit.master.subkey_fingerprint.upper()),
+                *("--rpm-subkey", cert.subkey_fingerprint.upper()),
+                *("--version", VERSIONS[0]),
+                *("--maintainer", MAINTAINER),
+                *("--source-date-epoch", str(EPOCH)),
+                *("--output", str(signed)),
+                *("--sign-home", str(cert.home)),
+                *("--sign-key", cert.subkey_fingerprint.upper()),
+            ]
+        )
+        assert code == 0
+        (directory / "signed").mkdir()
+        shutil.copy(signed / _rpm(VERSIONS[0]), directory / "signed" / _rpm(VERSIONS[0]))
+        for path in (directory, *directory.iterdir()):
+            path.chmod(0o755 if path.is_dir() else 0o644)
+        yield directory
+    finally:
+        stop_agent(cert)
+
+
+def _kit(directory: Path, packages: Path, mirror: Mirror) -> Path:
+    """Client configuration that trusts only the key files the keyring packages install."""
+    directory.mkdir()
+    shutil.copytree(packages, directory / "pkg")
+    (directory / "apt.d").mkdir()
+    (directory / "apt.d" / "test.sources").write_text(
+        f"Types: deb\nURIs: {mirror.base}/apt\nSuites: stable\nComponents: main\n"
+        f"Signed-By: {DEB_KEY}\n",
+        encoding="utf-8",
+    )
+    (directory / "repos.d").mkdir()
+    (directory / "repos.d" / "test.repo").write_text(
+        f"[rabib-test]\nname=test\nbaseurl={mirror.base}/rpm/{PHP}/x86_64\nenabled=1\n"
+        f"gpgcheck=0\nrepo_gpgcheck=1\ngpgkey=file://{RPM_KEY}\n",
+        encoding="utf-8",
+    )
+    for path in (directory, *directory.rglob("*")):
+        path.chmod(0o755 if path.is_dir() else 0o644)
+    return directory
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _docker() -> None:
+    assert docker_available(), "the container layer needs a running docker"
+
+
+def _apt(box: Box) -> None:
+    tool = Apt(box, PHP)
+    # without the keyring the signature cannot be checked: nothing is offered
+    tool.update()
+    assert tool.listed() == set()
+    done = box.run("apt-get", "install", "-y", f"/kit/pkg/{_deb(VERSIONS[0])}")
+    assert done.code == 0, done.output
+    assert (
+        box.run("dpkg-query", "-W", "-f=${Version}", "rabib-archive-keyring").output
+        == (VERSIONS[0])
+    )
+    assert box.run("test", "-f", DEB_KEY).code == 0
+    # the installed keyring alone verifies the published metadata
+    done = tool.update()
+    assert done.code == 0 and not tool.refused(done), done.output
+    assert tool.listed() == {tool.version(TAG)}
+    done = tool.install()
+    assert done.code == 0, done.output
+    assert tool.installed() == tool.version(TAG)
+    # a later keyring release upgrades in place and the metadata still verifies
+    done = box.run("apt-get", "install", "-y", f"/kit/pkg/{_deb(VERSIONS[1])}")
+    assert done.code == 0, done.output
+    assert (
+        box.run("dpkg-query", "-W", "-f=${Version}", "rabib-archive-keyring").output
+        == (VERSIONS[1])
+    )
+    done = tool.update()
+    assert done.code == 0 and not tool.refused(done), done.output
+    assert tool.listed() == {tool.version(TAG)}
+
+
+def _caches(box: Box) -> dict[str, bool]:
+    """Which of the prepared key caches exist."""
+    return {
+        path: box.run("test", "-e", f"{path}/pubring").code == 0
+        for paths in CACHES.values()
+        for path in paths
+    }
+
+
+def _make_caches(box: Box) -> None:
+    for paths in CACHES.values():
+        for path in paths:
+            done = box.run("mkdir", "-p", f"{path}/pubring")
+            assert done.code == 0, done.output
+    assert all(_caches(box).values())
+
+
+def _signed_rpm(box: Box) -> None:
+    """This distribution's `rpmkeys` accepts the signed rpm against the key file the rpm installs.
+
+    An unsigned copy is the control: `rpmkeys --checksig` exits 0 for it but reports no signature.
+    """
+    database = "/root/signed-rpmdb"
+    assert box.run("mkdir", database).code == 0
+    done = box.run("rpmkeys", "--dbpath", database, "--import", RPM_KEY)
+    assert done.code == 0, done.output
+    package = f"/kit/pkg/signed/{_rpm(VERSIONS[0])}"
+    done = box.run("rpmkeys", "--dbpath", database, "--checksig", package)
+    assert done.code == 0, done.output
+    assert done.output.strip() == f"{package}: digests signatures OK", done.output
+    unsigned = box.run(
+        "rpmkeys", "--dbpath", database, "--checksig", f"/kit/pkg/{_rpm(VERSIONS[0])}"
+    )
+    assert "signatures OK" not in unsigned.output, unsigned.output
+
+
+def _dnf(box: Box) -> None:
+    tool = Dnf(box, PHP)
+    install = ("dnf", "-y", "--setopt=reposdir=/kit/repos.d", "--disablerepo=*", "install")
+    # without the key file the repository cannot be verified: nothing is offered
+    tool.update()
+    done = box.run("dnf", *tool.OPTIONS, "repoquery", "--available", "php-a")
+    assert tool.version(TAG) not in done.output
+    for version in VERSIONS:
+        _make_caches(box)
+        done = box.run(*install, f"/kit/pkg/{_rpm(version)}")
+        assert done.code == 0, done.output
+        assert box.run("rpm", "-q", "--qf", "%{VERSION}", "rabib-release").output == version
+        assert box.run("test", "-f", RPM_KEY).code == 0
+        # the clean-up removes the key caches of the `rabib-` repositories and nothing else
+        left = _caches(box)
+        assert [path for path, present in left.items() if present] == [
+            f"{path}" for path in CACHES["other"]
+        ], left
+        # the installed key file alone verifies the published metadata
+        done = tool.update()
+        assert done.code == 0 and not tool.refused(done), done.output
+        assert tool.listed() == {tool.version(TAG)}
+    _signed_rpm(box)
+    done = tool.install()
+    assert done.code == 0, done.output
+    assert tool.installed() == tool.version(TAG)
+
+
+@pytest.mark.parametrize("name", list(IMAGES))
+def test_a_real_client_trusts_the_installed_keyring_and_the_upgrade_clears_the_key_caches(
+    name: str, packages: Path, make_rig: Callable[..., Rig], tmp_path: Path
+) -> None:
+    image: Image = IMAGES[name]
+    who = product("a-php", "a", PHP)
+    rig = make_rig(who)
+    publish(rig, who, TAG, time.time())
+    with Mirror(rig) as mirror, Box(image, _kit(tmp_path / "kit", packages, mirror)) as box:
+        if image.family == "apt":
+            _apt(box)
+        else:
+            _dnf(box)
