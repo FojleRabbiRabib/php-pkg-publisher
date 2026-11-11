@@ -66,7 +66,8 @@ pytest -m container
 
 These checks, plus file-hygiene hooks (YAML and TOML syntax, private-key and large-file
 detection, line endings, trailing whitespace), run as git hooks through
-[pre-commit](https://pre-commit.com): on commit, and pytest on push. CI runs the same hooks. Every
+[pre-commit](https://pre-commit.com): on commit, and pytest on push. CI runs the same hooks, the
+PHP checks (`php -l`, phpcs, phpstan) and, as a separate job, the container layer. Every
 hook calls a pinned tool from the environment above, so install the hooks with that environment
 active (the installed hook records its Python; a distro `pre-commit` is too old for this config)
 and activate it again before each commit:

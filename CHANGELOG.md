@@ -170,6 +170,13 @@ All notable changes to this project are documented here. The format follows
   while a new release is published, upgrades once the metadata is intact, and sees the older set
   after a rollback. The client trusts the repository key and the RPM key, as a user's would.
   The packages are fakes, so `php -m` is left to the product repositories.
+- CI gates for the receiver and the test layers: the `static` job installs the PHP tools from
+  `composer.lock` (PHP 8.3 and Composer 2.11.1, pinned by checksum, through a setup action pinned by commit SHA) and runs
+  `php -l`, phpcs and phpstan next to the pin lint, ruff, mypy, the unit and negative tests and
+  the pre-commit hooks. A separate `container` job pulls the nine pinned images and runs
+  `pytest -m container`. Both jobs share one local setup action (Python 3.10, the hash-pinned
+  development tools and the verification tools, `cosign` by checksum). Shell checks join when
+  `setup.sh` lands.
 - `products.yml` entries now require `extension`, the name inside package names
   (`php8.3-<extension>`); two products cannot share one.
 
