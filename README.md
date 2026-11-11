@@ -37,7 +37,7 @@ others.
 | `deploy/systemd/` | The systemd units: publisher service, timer and nudge path unit, hourly watch, failure notifier |
 | `web/` | The webhook receiver (`hooks/sync.php`: verifies a GitHub release delivery and touches the nudge file) and the docroot `.htaccess` template (`docroot.htaccess`: the receiver route, the `.php` block and the 302 to GitHub Releases) |
 | `tools/` | Repository tooling, including the pin lint (`python tools/lint_pins.py [root]`) |
-| `tests/` | Unit tests, and the negative layer (`tests/negative/`: whole passes over throwaway keys and real packages that must fail closed, read back with `gpgv`); the container layer is not written yet |
+| `tests/` | Unit tests, and the negative layer (`tests/negative/`: whole passes over throwaway keys and real packages that must fail closed, read back with `gpgv`); and the container layer (`tests/container/`, `pytest -m container`: a real `apt` or `dnf` of each distribution installs, upgrades and follows a rollback, and refuses tampered metadata) |
 
 ## Development
 
@@ -54,6 +54,14 @@ ruff check . && ruff format --check .
 mypy
 pytest
 python tools/lint_pins.py
+```
+
+The container layer is not part of bare `pytest`. It needs a running docker and the nine pinned
+images, which containers use without pulling:
+
+```bash
+grep -o '[a-z]*@sha256:[0-9a-f]*' tests/container/images.py | xargs -n1 docker pull -q
+pytest -m container
 ```
 
 These checks, plus file-hygiene hooks (YAML and TOML syntax, private-key and large-file

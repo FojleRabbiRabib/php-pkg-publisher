@@ -7,58 +7,19 @@ from __future__ import annotations
 
 import posixpath
 import re
-from dataclasses import dataclass
-from pathlib import Path
 
 import pytest
+from htaccess import OWNER, REDIRECT, directive_lines, redirect, rewrite_rules
 
 from publisher import admit, config, feed, metadata
 
-FILE = Path(__file__).resolve().parents[2] / "web" / "docroot.htaccess"
-OWNER = "https://github.com/FojleRabbiRabib/"
-
-
-@dataclass(frozen=True)
-class Rule:
-    pattern: str
-    target: str
-    flags: str
-
-
-def _lines() -> list[str]:
-    return [
-        line.strip()
-        for line in FILE.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.startswith("#")
-    ]
-
-
-def _rules() -> list[Rule]:
-    found = []
-    for line in _lines():
-        if line.startswith("RewriteRule "):
-            pattern, target, flags = line.split()[1:4]
-            found.append(Rule(pattern, target, flags.strip("[]")))
-    return found
-
-
-REDIRECT = _rules()[2]
-
-
-def _redirect(path: str) -> str | None:
-    """The Location a request path gets, or None when the rule does not match."""
-    match = re.search(REDIRECT.pattern, path.removeprefix("/"))
-    if match is None:
-        return None
-    return re.sub(r"\$([0-9])", lambda m: str(match.group(int(m[1]))), REDIRECT.target)
-
 
 def test_the_file_holds_exactly_the_three_rules_in_order() -> None:
-    lines = _lines()
+    lines = directive_lines()
     assert lines[0] == "RewriteEngine On"
     assert lines[1].startswith("RewriteCond %{THE_REQUEST} ")
     assert lines[1].endswith(" [NC]")
-    rules = _rules()
+    rules = rewrite_rules()
     assert [rule.flags for rule in rules] == ["R=404,L", "L", "R=302,L"]
     assert rules[0].pattern == "^" and rules[0].target == "-"
     assert (rules[1].pattern, rules[1].target) == ("^hooks/sync$", "hooks/sync.php")
@@ -76,7 +37,7 @@ def test_the_target_is_fixed_to_one_host_and_owner() -> None:
 @pytest.mark.parametrize("prefix", ["", "apt/"])
 def test_a_pool_path_redirects_to_the_release_asset(prefix: str) -> None:
     path = f"{prefix}pool/usearch-php/v1.2.3/php8.3-usearch_1.2.3-1_amd64.deb"
-    assert _redirect(path) == (
+    assert redirect(path) == (
         f"{OWNER}usearch-php/releases/download/v1.2.3/php8.3-usearch_1.2.3-1_amd64.deb"
     )
 
@@ -87,8 +48,8 @@ def test_every_path_the_metadata_lists_is_redirected() -> None:
             name=name, kind="deb", layout="x", php="8.3", arch="amd64", sha256="0" * 64, size=1
         )
         pool = metadata.Entry(repo="usearch-php", tag="v1.2.3", package=package).pool_path
-        assert _redirect(pool) == f"{OWNER}usearch-php/releases/download/v1.2.3/{name}"
-        assert _redirect("apt/" + pool) is not None
+        assert redirect(pool) == f"{OWNER}usearch-php/releases/download/v1.2.3/{name}"
+        assert redirect("apt/" + pool) is not None
         # an rpm's href is relative to rpm/<php>/<arch>/ and reaches the same pool path
         href = metadata.LOCATION_PREFIX + pool
         assert posixpath.normpath(posixpath.join("rpm/8.3/x86_64", href)) == pool
@@ -125,12 +86,12 @@ def test_every_path_the_metadata_lists_is_redirected() -> None:
     ],
 )
 def test_a_path_outside_the_allow_list_is_not_redirected(path: str) -> None:
-    assert _redirect(path) is None
+    assert redirect(path) is None
 
 
 def test_a_trailing_newline_cannot_reach_the_location() -> None:
     # `$` also matches before a final newline, but no captured group admits one
-    location = _redirect("pool/usearch-php/v1.2.3/a.deb\n")
+    location = redirect("pool/usearch-php/v1.2.3/a.deb\n")
     assert location == f"{OWNER}usearch-php/releases/download/v1.2.3/a.deb"
     assert location is not None and not set(location) & {"\r", "\n"}
 
@@ -246,7 +207,7 @@ def test_the_file_pattern_matches_the_asset_name_rule(value: str) -> None:
     ],
 )
 def test_the_php_rule_condition_matches_any_php_request_line(path: str) -> None:
-    condition = next(line for line in _lines() if line.startswith("RewriteCond"))
+    condition = next(line for line in directive_lines() if line.startswith("RewriteCond"))
     pattern = condition.split()[2]
     line = f"POST /{path}?q=1 HTTP/1.1"
     assert re.search(pattern.replace("[:space:]", r"\s"), line, re.IGNORECASE)
@@ -265,6 +226,6 @@ def test_the_php_rule_condition_matches_any_php_request_line(path: str) -> None:
     ],
 )
 def test_the_php_rule_condition_leaves_other_requests_alone(line: str) -> None:
-    condition = next(line for line in _lines() if line.startswith("RewriteCond"))
+    condition = next(line for line in directive_lines() if line.startswith("RewriteCond"))
     pattern = condition.split()[2].replace("[:space:]", r"\s")
     assert re.search(pattern, line, re.IGNORECASE) is None

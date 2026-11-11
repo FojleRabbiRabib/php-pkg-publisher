@@ -160,6 +160,16 @@ All notable changes to this project are documented here. The format follows
   another publishes, a download that fails once, an unreachable Sigstore, 20 daily passes
   with the admit stage down, a yanked release, a rollback, a second run while one is running,
   and a nudge that arrives during a run.
+- Container test layer, `tests/container/`, run with `pytest -m container` (bare `pytest` skips
+  it; it needs docker and the pinned images pulled first, see the README): a real `apt` or `dnf`
+  in each of Ubuntu 22.04, 24.04 and 26.04, Debian bookworm and trixie, AlmaLinux 8, 9 and 10
+  and Fedora 44 (images pinned by digest), for PHP 8.3, 8.4 and 8.5, installs from a tree built
+  by the real pass. A local mirror serves the tree and applies the shipped
+  `.htaccess` redirect rule to a stand-in for GitHub's downloads. Each client installs through the
+  redirect, refuses metadata with one flipped byte (`InRelease`/`Release`, or `repomd.xml.asc`)
+  while a new release is published, upgrades once the metadata is intact, and sees the older set
+  after a rollback. The client trusts the repository key and the RPM key, as a user's would.
+  The packages are fakes, so `php -m` is left to the product repositories.
 - `products.yml` entries now require `extension`, the name inside package names
   (`php8.3-<extension>`); two products cannot share one.
 

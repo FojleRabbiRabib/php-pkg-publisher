@@ -20,9 +20,11 @@ select = ["B", "C4", "E", "F", "I", "PTH", "RUF", "S", "SIM", "UP", "W"]
 [tool.mypy]
 python_version = "3.10"
 strict = true
-mypy_path = ["tools", "tests/unit", "tests/negative"]
+mypy_path = ["tools", "tests/unit", "tests/negative", "tests/container"]
 files = ["publisher", "tools", "tests"]
 
 [tool.pytest.ini_options]
-pythonpath = [".", "tools", "tests/unit", "tests/negative"]
+pythonpath = [".", "tools", "tests/unit", "tests/negative", "tests/container"]
 testpaths = ["tests"]
+addopts = "-m 'not container'"
+markers = ["container: installs with a real apt or dnf in docker; run with `pytest -m container`"]

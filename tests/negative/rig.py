@@ -65,9 +65,9 @@ exit 1
 """
 
 
-def product(repo: str, extension: str) -> Product:
+def product(repo: str, extension: str, php: str = "8.3") -> Product:
     return Product(
-        repo=repo, extension=extension, php=("8.3",), arch=("amd64",), ts=("nts",), exclude=()
+        repo=repo, extension=extension, php=(php,), arch=("amd64",), ts=("nts",), exclude=()
     )
 
 
@@ -206,6 +206,10 @@ class Feed:
         self._releases.setdefault(repo, {})[tag] = Release(
             tag=tag, kind=kind, immutable=immutable, assets=tuple(assets)
         )
+
+    def asset(self, url: str) -> bytes | None:
+        """The bytes a release asset URL serves, or None when there is no such asset."""
+        return self._bytes.get(url)
 
     def lister(self, repo: str, *, etag: str | None) -> Listing:
         releases = tuple(self._releases.get(repo, {}).values())
