@@ -20,9 +20,9 @@ select = ["B", "C4", "E", "F", "I", "PTH", "RUF", "S", "SIM", "UP", "W"]
 [tool.mypy]
 python_version = "3.10"
 strict = true
-mypy_path = ["tools", "tests/unit"]
+mypy_path = ["tools", "tests/unit", "tests/negative"]
 files = ["publisher", "tools", "tests"]
 
 [tool.pytest.ini_options]
-pythonpath = [".", "tools", "tests/unit"]
+pythonpath = [".", "tools", "tests/unit", "tests/negative"]
 testpaths = ["tests"]

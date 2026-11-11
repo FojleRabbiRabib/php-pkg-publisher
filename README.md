@@ -37,7 +37,7 @@ others.
 | `deploy/systemd/` | The systemd units: publisher service, timer and nudge path unit, hourly watch, failure notifier |
 | `web/` | The webhook receiver (`hooks/sync.php`: verifies a GitHub release delivery and touches the nudge file) and the docroot `.htaccess` template (`docroot.htaccess`: the receiver route, the `.php` block and the 302 to GitHub Releases) |
 | `tools/` | Repository tooling, including the pin lint (`python tools/lint_pins.py [root]`) |
-| `tests/` | Unit tests (negative and container layers arrive with the publisher) |
+| `tests/` | Unit tests, and the negative layer (`tests/negative/`: whole passes over throwaway keys and real packages that must fail closed, read back with `gpgv`); the container layer is not written yet |
 
 ## Development
 

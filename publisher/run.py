@@ -184,12 +184,15 @@ class LiveStages:
         self._trusted = verify.obtain_trusted_root(self._tools, self._settings.trust, now=now)
         return self._trusted
 
+    def _lister(self) -> admit.Lister:
+        """The release feed client; the one place the admit stage reaches GitHub's API."""
+        token = feed.read_token(self._settings.token_file)
+        return functools.partial(feed.list_releases, transport=feed.HttpsTransport(token))
+
     def admit(self, now: float) -> admit.Report:
         if self._trusted is None:
             raise verify.VerifyError("the trusted root must be obtained before admitting")
-        token = feed.read_token(self._settings.token_file)
-        transport = feed.HttpsTransport(token)
-        lister = functools.partial(feed.list_releases, transport=transport)
+        lister = self._lister()
         with verify.Verifier(
             self._tools,
             rpm_key=self._settings.rpm_key,

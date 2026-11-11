@@ -148,6 +148,18 @@ All notable changes to this project are documented here. The format follows
   asset under one fixed owner. The patterns are allow-lists held to the publisher's own repo name,
   release tag and asset name rules (compared character for character by a test), and reject
   uppercase products, dot segments, leading zeros and encoded slashes.
+- Negative test layer, `tests/negative/`: whole publisher passes over throwaway keys and real
+  debs and rpms, with only the release feed, the download, the Sigstore refresh and `cosign`
+  faked. Each case reads the published tree back as a client would (`gpgv` on `InRelease`,
+  `Release.gpg` and the six `repomd.xml.asc`, and the package lists from `Packages` and the
+  `primary.xml` that `repomd.xml` names). It covers eleven kinds of bad release (a package
+  changed after signing, bundles of another repo or tag, a missing bundle or package, a wrong
+  `SHA256SUMS`, an unsigned rpm or one signed by another key, a deb of another version, a
+  mutable release), an `-rc` tag with or without the prerelease flag, a tag that fails while a
+  later one is valid, a product that fails while
+  another publishes, a download that fails once, an unreachable Sigstore, 20 daily passes
+  with the admit stage down, a yanked release, a rollback, a second run while one is running,
+  and a nudge that arrives during a run.
 - `products.yml` entries now require `extension`, the name inside package names
   (`php8.3-<extension>`); two products cannot share one.
 
