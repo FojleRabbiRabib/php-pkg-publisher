@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Fojle Rabbi (Rabib)
+#
+# setup.sh is POSIX sh (dash and bash both run it); these optional checks are on as well.
+# check-set-e-suppressed and check-extra-masked-returns stay off: they flag a predicate function
+# used in `if` and `$(id -u)` in a test, which are the intended idioms here.
+shell=sh
+enable=avoid-nullary-conditions
+enable=check-unassigned-uppercase
+enable=deprecate-which
+enable=quote-safe-variables

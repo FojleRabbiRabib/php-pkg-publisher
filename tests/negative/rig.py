@@ -259,9 +259,13 @@ class _Stages(run.LiveStages):
 class Rig:
     """One publisher installation in a temporary directory, driven pass by pass."""
 
-    def __init__(self, root: Path, kit: Kit, products: tuple[Product, ...]) -> None:
+    def __init__(
+        self, root: Path, kit: Kit, products: tuple[Product, ...], *, rpm_key: str = "good"
+    ) -> None:
+        """`rpm_key` names the entry of `kit.rpm_keys` that signs the rpms and is pinned."""
         self.kit = kit
         self.root = root
+        self.rpm_key = rpm_key
         for name in ("state", "cache", "trust", "work", "lock", "nudge"):
             (root / name).mkdir(mode=0o700)
         (root / "site").mkdir(mode=0o755)
@@ -276,7 +280,7 @@ class Rig:
             work=root / "work",
             lock=root / "lock",
             nudge=root / "nudge" / "sync",
-            rpm_key=kit.rpm_keys["good"].public,
+            rpm_key=kit.rpm_keys[rpm_key].public,
             token_file=root / "token",
             token_expires=datetime.date(2099, 1, 1),
             alert_file=root / "alert",

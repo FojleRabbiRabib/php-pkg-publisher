@@ -16,7 +16,7 @@ BASE_RPM = "php-a"
 
 def publish(rig: Rig, who: Product, tag: str, now: float) -> str:
     """Release `tag` of `who` through one real pass and return the new generation's id."""
-    files = rig.kit.release(who, tag)
+    files = rig.kit.release(who, tag, rpm_key=rig.rpm_key)
     rig.feed.add(who.repo, tag, files)
     result = rig.run_pass(now)
     assert result.failure is None, f"the publisher pass failed: {result.failure}"

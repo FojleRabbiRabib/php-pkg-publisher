@@ -41,6 +41,11 @@ repos:
         language: unsupported
         types: [php]
         pass_filenames: false
+      - id: shellcheck
+        name: shellcheck
+        entry: shellcheck
+        language: unsupported
+        types: [shell]
       - id: pytest
         name: pytest
         entry: pytest -q

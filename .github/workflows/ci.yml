@@ -39,20 +39,62 @@ jobs:
           php -l web/hooks/sync.php
           vendor/bin/phpcs
           vendor/bin/phpstan analyse --no-progress
+      - name: Shell
+        run: shellcheck setup.sh
       - name: Unit and negative tests
         run: pytest -q
       - name: Pre-commit hooks
         run: pre-commit run --all-files
 
-  container:
+  # One job per image, each pulling only its own; "rest" runs any container test that is not
+  # tied to an image, so a test added without an image name is not skipped.
+  container-image:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - ubuntu-22.04
+          - ubuntu-24.04
+          - ubuntu-26.04
+          - debian-bookworm
+          - debian-trixie
+          - almalinux-8
+          - almalinux-9
+          - almalinux-10
+          - fedora-44
+          - rest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
-      - name: Pull the pinned images
-        run: grep -o '[a-z]*@sha256:[0-9a-f]*' tests/container/images.py | xargs -n1 docker pull -q
+      - name: Pull the pinned image
+        if: matrix.image != 'rest'
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          python -c "import sys; sys.path.insert(0, 'tests/container'); from images import IMAGES; print(IMAGES[sys.argv[1]].reference)" "$IMAGE" \
+            | xargs docker pull -q
       - name: Container tests
-        run: pytest -m container -q
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          if [ "$IMAGE" = rest ]; then
+            # exit status 5 means that no test is left over, which is the expected case
+            pytest -m container -q -k 'not (ubuntu-22.04 or ubuntu-24.04 or ubuntu-26.04 or debian-bookworm or debian-trixie or almalinux-8 or almalinux-9 or almalinux-10 or fedora-44)' || [ "$?" -eq 5 ]
+          else
+            pytest -m container -q -k "$IMAGE"
+          fi
+
+  # The one check that branch protection names: it passes only when every image job passed.
+  container:
+    if: always()
+    needs: container-image
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Every container job passed
+        env:
+          RESULT: ${{ needs.container-image.result }}
+        run: test "$RESULT" = success

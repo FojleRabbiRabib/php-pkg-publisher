@@ -173,10 +173,13 @@ All notable changes to this project are documented here. The format follows
 - CI gates for the receiver and the test layers: the `static` job installs the PHP tools from
   `composer.lock` (PHP 8.3 and Composer 2.11.1, pinned by checksum, through a setup action pinned by commit SHA) and runs
   `php -l`, phpcs and phpstan next to the pin lint, ruff, mypy, the unit and negative tests and
-  the pre-commit hooks. A separate `container` job pulls the nine pinned images and runs
-  `pytest -m container`. Both jobs share one local setup action (Python 3.10, the hash-pinned
-  development tools and the verification tools, `cosign` by checksum). Shell checks join when
-  `setup.sh` lands.
+  the pre-commit hooks (and `shellcheck setup.sh`). The container layer runs as one
+  `container-image` job per pinned image, each pulling only its own image, plus a `rest` job for
+  any container test that names no image, and a `container` job that passes only when all of them
+  passed (the check name branch protection requires). The jobs share one local setup action
+  (Python 3.10, the hash-pinned development tools and the verification tools, `cosign` by
+  checksum). A container run stops at the start with a named error when the disk has less than
+  1.5 GiB free, the headroom above the admit stage's floor.
 - Keyring packages and their builder, `tools/build_keyring.py` with the sources in `keyring/`:
   `rabib-archive-keyring` (a deb for apt) and `rabib-release` (a noarch rpm for dnf), built from a
   public certificate, a primary fingerprint and the repository and RPM signing subkeys, with
@@ -203,6 +206,31 @@ All notable changes to this project are documented here. The format follows
   published metadata verifies; on dnf it also checks that an install and an upgrade of the keyring
   remove the key caches of a `rabib-` repository and keep those of another, and that the signed
   rpm verifies with the distribution's own `rpmkeys` against the installed key file.
+- `setup.sh`, the client setup script (POSIX sh, run as root, no arguments). It detects apt or dnf
+  from `/etc/os-release`, refuses an unknown distribution or architecture, downloads the keyring
+  package over TLS without following redirects, checks its package name, and installs it. On apt
+  it writes a deb822 sources file with `Signed-By:` and runs `apt-get update --error-on=any` over
+  that source alone (without deleting the index files of the others); on dnf it imports the key
+  outside the transaction, writes one repository section per PHP version (`gpgcheck=1`,
+  `repo_gpgcheck=1`), enables the sections of the PHP it finds installed (and keeps those already
+  enabled, never disabling one) and refreshes the metadata of those sections alone, with
+  `skip_if_unavailable=0`, so another repository that is down cannot stop the script and a
+  signature error is an error (measured: dnf5 then exits non-zero by itself; a read of its output
+  for the signature error stays as a second check). The enabled sections are read from the
+  repository file and from dnf5's override files, where `config-manager` stores them; a section an
+  override file turns off explicitly stays off even when its PHP is installed. A refresh that
+  fails (or an interrupt before it is confirmed) puts the previous sources or repository file
+  back, or removes the new one, and apt's earlier index of ours with it; apt must have fetched a
+  fresh index of ours. It installs gnupg when missing, and prints the primary and signing-subkey
+  fingerprints with their expiry to compare with the published ones. A re-run changes no byte of
+  the files the script wrote: keys added by hand to a section of the dnf repository file (such as
+  `priority=50`) are kept, while the keys the script writes and the ones that change what is
+  trusted (`pkg_gpgcheck`, `localpkg_gpgcheck`, `mirrorlist`, `metalink`) are not, with a warning,
+  and neither are their indented continuation lines or any line that is not `key=value`; a
+  symbolic link to either file stays a link, and a dangling link or a directory stops the script. `shellcheck` (pinned as `shellcheck-py`) runs in
+  pre-commit and in the CI `static` job. Tests: host-side checks that the script parses under dash and bash and that a
+  truncated download runs nothing, and, in all nine images, a full lifecycle (install through the
+  redirect, re-run, tampered index refused), the refusals, PHP detection and the gnupg install.
 - `products.yml` entries now require `extension`, the name inside package names
   (`php8.3-<extension>`); two products cannot share one.
 

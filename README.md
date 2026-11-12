@@ -37,6 +37,7 @@ others.
 | `deploy/systemd/` | The systemd units: publisher service, timer and nudge path unit, hourly watch, failure notifier |
 | `web/` | The webhook receiver (`hooks/sync.php`: verifies a GitHub release delivery and touches the nudge file) and the docroot `.htaccess` template (`docroot.htaccess`: the receiver route, the `.php` block and the 302 to GitHub Releases) |
 | `keyring/` | The sources of the two keyring packages, `rabib-archive-keyring` (apt) and `rabib-release` (dnf): a spec template and the Debian copyright file. `tools/build_keyring.py` builds both from a public certificate; the keys are not in this repository |
+| `setup.sh` | The client setup script (POSIX sh, run as root): installs the keyring package, writes the apt sources file or the dnf repository file, refreshes the indexes and prints the key fingerprint to compare with the one published here |
 | `tools/` | Repository tooling: the pin lint (`python tools/lint_pins.py [root]`) and the keyring builder (`python tools/build_keyring.py --help`) |
 | `tests/` | Unit tests, and the negative layer (`tests/negative/`: whole passes over throwaway keys and real packages that must fail closed, read back with `gpgv`); and the container layer (`tests/container/`, `pytest -m container`: a real `apt` or `dnf` of each distribution installs, upgrades and follows a rollback, and refuses tampered metadata, and installs the built keyring packages and trusts the key file they install) |
 
@@ -55,6 +56,7 @@ ruff check . && ruff format --check .
 mypy
 pytest
 python tools/lint_pins.py
+shellcheck setup.sh
 ```
 
 The container layer is not part of bare `pytest`. It needs a running docker and the nine pinned
@@ -68,7 +70,8 @@ pytest -m container
 These checks, plus file-hygiene hooks (YAML and TOML syntax, private-key and large-file
 detection, line endings, trailing whitespace), run as git hooks through
 [pre-commit](https://pre-commit.com): on commit, and pytest on push. CI runs the same hooks, the
-PHP checks (`php -l`, phpcs, phpstan) and, as a separate job, the container layer. Every
+PHP checks (`php -l`, phpcs, phpstan), `shellcheck` and, as separate jobs, the container layer
+(one job per image). Every
 hook calls a pinned tool from the environment above, so install the hooks with that environment
 active (the installed hook records its Python; a distro `pre-commit` is too old for this config)
 and activate it again before each commit:

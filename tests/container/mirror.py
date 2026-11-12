@@ -5,12 +5,14 @@
 The redirect is the shipped `web/docroot.htaccess` rule, read by `htaccess.redirect`; only the
 host in its `Location` is swapped for this server, because a client in a container cannot reach
 github.com for a fake release. Everything else is a plain file under `current/`. `tamper` names
-tree paths whose middle byte is flipped on the way out, to show a client refuses them.
+tree paths whose middle byte is flipped on the way out, and `missing` names paths answered with
+404, to show a client refuses them.
 """
 
 from __future__ import annotations
 
 import threading
+from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from types import TracebackType
@@ -23,10 +25,14 @@ GITHUB = "https://github.com/"
 
 
 class Mirror:
-    def __init__(self, rig: Rig) -> None:
+    """`files` maps a site path (`keyring/rabib-release.rpm`) to bytes served as they are."""
+
+    def __init__(self, rig: Rig, files: Mapping[str, bytes] | None = None) -> None:
         self.tamper: set[str] = set()
+        self.missing: set[str] = set()
         self.redirects: list[str] = []
         self._rig = rig
+        self._files = dict(files or {})
         mirror = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -91,8 +97,10 @@ class Mirror:
 
     def _body(self, path: str) -> bytes | None:
         relative = PurePosixPath(path.removeprefix("/"))
-        if relative.is_absolute() or ".." in relative.parts:
+        if relative.is_absolute() or ".." in relative.parts or relative.as_posix() in self.missing:
             return None
+        if relative.as_posix() in self._files:
+            return self._files[relative.as_posix()]
         asset = self._rig.feed.asset(GITHUB + relative.as_posix())
         if asset is not None:
             return asset
