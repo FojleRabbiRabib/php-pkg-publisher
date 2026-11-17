@@ -294,3 +294,9 @@ def clear_pin(settings: Settings) -> None:
     """The `clear-pin` command: let the next run publish the admitted state again."""
     with _held(settings):
         generation.clear_pin(generation.open_site(settings.site))
+
+
+def requeue(settings: Settings, repo: str, tag: str) -> None:
+    """The `requeue` command: lift a failure or a quarantine so the next run tries the tag again."""
+    with _held(settings) as lock:
+        admit.requeue(admit.StateStore(settings.state, lock), repo, tag)

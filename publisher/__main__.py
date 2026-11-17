@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Fojle Rabbi (Rabib)
-"""Command line: `python -m publisher --config publisher.yml run | rollback ID | clear-pin`."""
+"""Command line: `python -m publisher --config publisher.yml COMMAND`.
+
+Commands: `run`, `rollback ID`, `clear-pin`, `requeue REPO TAG`.
+"""
 
 from __future__ import annotations
 
@@ -53,6 +56,11 @@ def _parser() -> argparse.ArgumentParser:
     back = commands.add_parser("rollback", help="re-sign an older generation's content and pin it")
     back.add_argument("generation")
     commands.add_parser("clear-pin", help="end a rollback; the next run publishes normally")
+    again = commands.add_parser(
+        "requeue", help="lift a failure or quarantine so the next run tries the tag again"
+    )
+    again.add_argument("repo")
+    again.add_argument("tag")
     return parser
 
 
@@ -93,6 +101,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.command == "rollback":
             done = run.rollback(settings, arguments.generation)
             print(f"rolled back: new generation {done.generation}, pinned until clear-pin")
+            return 0
+        if arguments.command == "requeue":
+            run.requeue(settings, arguments.repo, arguments.tag)
+            print(f"requeued: {clean(arguments.repo)} {clean(arguments.tag)}")
             return 0
         run.clear_pin(settings)
         print("pin cleared")

@@ -231,6 +231,18 @@ All notable changes to this project are documented here. The format follows
   pre-commit and in the CI `static` job. Tests: host-side checks that the script parses under dash and bash and that a
   truncated download runs nothing, and, in all nine images, a full lifecycle (install through the
   redirect, re-run, tampered index refused), the refusals, PHP detection and the gnupg install.
+- The manuals in `docs/`. `installation.md` is the client guide for apt and dnf (fingerprint
+  comparison first, upgrade, recovery of a server on an old key, removal); its command blocks are
+  run in order on all nine images by the container layer, and a unit test checks that the files it
+  writes are the files `setup.sh` writes. `security.md` states the trust chain, a cosign command
+  for checking a package yourself, key rotation and the limits. `runbook.md` covers the publisher's
+  settings, directories, secrets, commands, yanking a release, cosign installation and bump, signed
+  tag deployment and key rotation; its example settings load through the real loader and its
+  commands, units and quoted numbers are checked against the code. The live one-line install
+  command and the host-only steps are not documented yet.
+- `python -m publisher --config publisher.yml requeue <repo> <tag>`: lifts a failure or a
+  quarantine so the next run tries the tag again. It takes the run lock and refuses a tag with no
+  recorded failure.
 - `products.yml` entries now require `extension`, the name inside package names
   (`php8.3-<extension>`); two products cannot share one.
 

@@ -440,6 +440,139 @@ def test_main_rollback_reports_the_new_generation(
     assert "00000009-x" in capsys.readouterr().out
 
 
+def _quarantine(settings: Settings) -> None:
+    with locking.RunLock(settings.lock) as lock:
+        store = admit.StateStore(settings.state, lock)
+        failure = admit.Failure(
+            reason="bad bundle",
+            attempts=5,
+            first_failed=1.0,
+            next_retry=9e9,
+            quarantined=True,
+            last_alert=None,
+        )
+        store.save("usearch-php", admit.ProductState(failed={"v1.0.0": failure}))
+
+
+def _failed(settings: Settings) -> dict[str, admit.Failure]:
+    with locking.RunLock(settings.lock) as lock:
+        return admit.StateStore(settings.state, lock).load("usearch-php").failed
+
+
+def test_requeue_lifts_a_quarantine_under_the_lock(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    _quarantine(settings)
+    assert set(_failed(settings)) == {"v1.0.0"}
+    run.requeue(settings, "usearch-php", "v1.0.0")
+    assert _failed(settings) == {}
+
+
+def test_requeue_removes_only_the_named_failure_and_keeps_the_rest_of_the_state(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+
+    def failure(*, quarantined: bool) -> admit.Failure:
+        return admit.Failure(
+            reason="r",
+            attempts=2,
+            first_failed=1.0,
+            next_retry=9e9,
+            quarantined=quarantined,
+            last_alert=None,
+        )
+
+    with locking.RunLock(settings.lock) as lock:
+        store = admit.StateStore(settings.state, lock)
+        store.save(
+            "usearch-php",
+            admit.ProductState(
+                etag='"listing-1"',
+                listed=("v1.0.0", "v1.1.0", "v1.2.0"),
+                listed_at=5.0,
+                admitted={
+                    "v1.0.0": admit.AdmittedTag(
+                        admitted_at=2.0,
+                        packages=(
+                            admit.AdmittedPackage(
+                                name="php8.3-usearch_1.0.0_amd64.deb",
+                                kind="deb",
+                                layout="deb",
+                                php="8.3",
+                                arch="amd64",
+                                sha256="a" * 64,
+                                size=10,
+                            ),
+                        ),
+                    )
+                },
+                failed={
+                    "v1.1.0": failure(quarantined=False),
+                    "v1.2.0": failure(quarantined=True),
+                },
+            ),
+        )
+    run.requeue(settings, "usearch-php", "v1.1.0")
+    with locking.RunLock(settings.lock) as lock:
+        after = admit.StateStore(settings.state, lock).load("usearch-php")
+    assert set(after.failed) == {"v1.2.0"}
+    assert after.failed["v1.2.0"].quarantined is True
+    assert after.etag == '"listing-1"'
+    assert (after.listed, after.listed_at) == (("v1.0.0", "v1.1.0", "v1.2.0"), 5.0)
+    assert set(after.admitted) == {"v1.0.0"}
+
+
+def test_requeue_of_a_tag_that_never_failed_is_refused(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    _quarantine(settings)
+    with pytest.raises(admit.StateError, match="no recorded failure"):
+        run.requeue(settings, "usearch-php", "v2.0.0")
+    assert set(_failed(settings)) == {"v1.0.0"}
+
+
+def test_requeue_refuses_a_repo_name_that_is_not_one(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    with pytest.raises(admit.StateError, match="invalid repo name"):
+        run.requeue(settings, "../x", "v1.0.0")
+
+
+def test_requeue_does_not_touch_the_state_while_a_run_holds_the_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    _quarantine(settings)
+    monkeypatch.setattr(
+        run, "RunLock", lambda directory: locking.RunLock(directory, wait_seconds=0.2)
+    )
+    with locking.RunLock(settings.lock), pytest.raises(locking.LockError):
+        run.requeue(settings, "usearch-php", "v1.0.0")
+    assert set(_failed(settings)) == {"v1.0.0"}
+
+
+def test_main_requeue_reports_and_a_missing_failure_exits_one(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = _settings(tmp_path)
+    _quarantine(settings)
+    base = ["--config", str(tmp_path / "publisher.yml"), "requeue"]
+    assert main([*base, "usearch-php", "v1.0.0"]) == 0
+    assert capsys.readouterr().out == f"requeued: {clean('usearch-php')} {clean('v1.0.0')}\n"
+    assert _failed(settings) == {}
+    assert main([*base, "usearch-php", "v1.0.0"]) == 1
+    assert "no recorded failure" in capsys.readouterr().err
+
+
+def test_main_requeue_prints_no_raw_control_characters_from_its_arguments(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _settings(tmp_path)
+    base = ["--config", str(tmp_path / "publisher.yml"), "requeue"]
+    assert main([*base, "bad\x1b[31m", "v1.0.0"]) == 1
+    captured = capsys.readouterr()
+    assert "\x1b" not in captured.err
+    assert "\x1b" not in captured.out
+
+
 def test_clean_removes_host_paths() -> None:
     text = clean("/var/lib/pp/state/x.json: unreadable; also (/etc/pp/a.yml) and owner/repo")
     assert "/var" not in text

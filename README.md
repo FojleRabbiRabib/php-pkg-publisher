@@ -9,9 +9,14 @@ and one key give users every product with a single `apt install` or `dnf install
 
 ## Status
 
-Early scaffold. The repository currently holds the licence, tooling configuration, an empty
-product list and the CI pin lint; the publisher, webhook receiver, keyring packages and client
-setup script land milestone by milestone and are listed here when they ship.
+Pre-release. The publisher, webhook receiver, keyring packages, client setup script and the three
+manuals are in the repository and tested; the repository is not live yet, and the product list is
+empty until the first product ships.
+
+- [Install guide](docs/installation.md): how a client adds the repository and verifies the key.
+- [Runbook](docs/runbook.md): configuring the publisher and the day-to-day commands.
+- [Security notes](docs/security.md): the trust chain, how to check a package yourself, key
+  rotation and the limits.
 
 ## How it will work
 
@@ -33,11 +38,12 @@ others.
 | Path | Role |
 |---|---|
 | `products.yml` | Shipped products only: `repo`, `extension`, `php`, `arch`, `ts` (all required, no defaults), optional `exclude` |
-| `publisher/` | The publisher package: the strict loader for `products.yml` and `exclude.yml`, the GitHub release feed client, the release asset cache, the release verifier, the admit stage (per-tag state, retries, quarantine), the run lock, the metadata builder, the signer, the generation publisher, the settings loader, the `run` command, the alert sender, the failure notifier and the hourly watch |
+| `publisher/` | The publisher package: the strict loader for `products.yml` and `exclude.yml`, the GitHub release feed client, the release asset cache, the release verifier, the admit stage (per-tag state, retries, quarantine), the run lock, the metadata builder, the signer, the generation publisher, the settings loader, the `run`, `rollback`, `clear-pin` and `requeue` commands, the alert sender, the failure notifier and the hourly watch |
 | `deploy/systemd/` | The systemd units: publisher service, timer and nudge path unit, hourly watch, failure notifier |
 | `web/` | The webhook receiver (`hooks/sync.php`: verifies a GitHub release delivery and touches the nudge file) and the docroot `.htaccess` template (`docroot.htaccess`: the receiver route, the `.php` block and the 302 to GitHub Releases) |
 | `keyring/` | The sources of the two keyring packages, `rabib-archive-keyring` (apt) and `rabib-release` (dnf): a spec template and the Debian copyright file. `tools/build_keyring.py` builds both from a public certificate; the keys are not in this repository |
 | `setup.sh` | The client setup script (POSIX sh, run as root): installs the keyring package, writes the apt sources file or the dnf repository file, refreshes the indexes and prints the key fingerprint to compare with the one published here |
+| `docs/` | The manuals: install guide, runbook and security notes. Every command block of the install guide is run on a real `apt` or `dnf` by the container layer, and the runbook and security notes are checked against the code they quote |
 | `tools/` | Repository tooling: the pin lint (`python tools/lint_pins.py [root]`) and the keyring builder (`python tools/build_keyring.py --help`) |
 | `tests/` | Unit tests, and the negative layer (`tests/negative/`: whole passes over throwaway keys and real packages that must fail closed, read back with `gpgv`); and the container layer (`tests/container/`, `pytest -m container`: a real `apt` or `dnf` of each distribution installs, upgrades and follows a rollback, and refuses tampered metadata, and installs the built keyring packages and trusts the key file they install) |
 
