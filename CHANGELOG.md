@@ -252,6 +252,11 @@ All notable changes to this project are documented here. The format follows
   rpm, whose indexes must match the signed `InRelease` and `repomd.xml`, answer a GET with 302 to
   the exact GitHub release asset of a declared product. An empty package list or a placeholder pin
   fails. A failure goes to the chat when the two secrets are set, and fails the run.
+- Key drill (`tests/container/test_key_drill.py`, every tested distribution, throwaway keys): a
+  client with the first keyring verifies the repository; after the repository switches to the next
+  signing subkey it refuses it with the message of its distribution, and after it upgrades the
+  keyring package (which lists both subkeys) it verifies and installs. Without the key cache
+  clean-up of `rabib-release`, EL10 and Fedora 44 fail the drill.
 - `products.yml` entries now require `extension`, the name inside package names
   (`php8.3-<extension>`); two products cannot share one.
 
@@ -262,3 +267,9 @@ All notable changes to this project are documented here. The format follows
   load the publish modules.
 - Release tags may not have leading zeros in a number (`v01.0.0` is ignored), so two tags cannot
   map to one package version.
+
+### Fixed
+
+- The install guide and the security notes named `NO_PUBKEY` and `Signing key not found` for every
+  client. Measured: apt on Debian 13 says `Missing key`, and dnf on Enterprise Linux 8 and 9 says
+  `Bad GPG signature`; the guide now quotes each, and a test checks it.

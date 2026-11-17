@@ -14,7 +14,6 @@ time. The full rotation of the signing subkey is the key drill, not this test.
 
 from __future__ import annotations
 
-import shutil
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -23,7 +22,7 @@ import pytest
 from box import Box, docker_available
 from clients import Apt, Dnf, publish
 from images import IMAGES, Image
-from keyrings import DEB_KEY, RPM_KEY, VERSIONS, deb_name, rpm_name
+from keyrings import DEB_KEY, RPM_KEY, VERSIONS, client_kit, deb_name, rpm_name
 from mirror import Mirror
 from rig import Rig, product
 
@@ -35,27 +34,6 @@ CACHES = {
     "rabib": ("/var/cache/dnf/rabib-test-0123abcd", "/var/cache/libdnf5/rabib-test-0123abcd"),
     "other": ("/var/cache/dnf/other-0123abcd", "/var/cache/libdnf5/other-0123abcd"),
 }
-
-
-def _kit(directory: Path, packages: Path, mirror: Mirror) -> Path:
-    """Client configuration that trusts only the key files the keyring packages install."""
-    directory.mkdir()
-    shutil.copytree(packages, directory / "pkg")
-    (directory / "apt.d").mkdir()
-    (directory / "apt.d" / "test.sources").write_text(
-        f"Types: deb\nURIs: {mirror.base}/apt\nSuites: stable\nComponents: main\n"
-        f"Signed-By: {DEB_KEY}\n",
-        encoding="utf-8",
-    )
-    (directory / "repos.d").mkdir()
-    (directory / "repos.d" / "test.repo").write_text(
-        f"[rabib-test]\nname=test\nbaseurl={mirror.base}/rpm/{PHP}/x86_64\nenabled=1\n"
-        f"gpgcheck=0\nrepo_gpgcheck=1\ngpgkey=file://{RPM_KEY}\n",
-        encoding="utf-8",
-    )
-    for path in (directory, *directory.rglob("*")):
-        path.chmod(0o755 if path.is_dir() else 0o644)
-    return directory
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -166,7 +144,10 @@ def test_a_real_client_trusts_the_installed_keyring_and_the_upgrade_clears_the_k
     who = product("a-php", "a", PHP)
     rig = make_rig(who)
     publish(rig, who, TAG, time.time())
-    with Mirror(rig) as mirror, Box(image, _kit(tmp_path / "kit", packages, mirror)) as box:
+    with (
+        Mirror(rig) as mirror,
+        Box(image, client_kit(tmp_path / "kit", packages, mirror, PHP)) as box,
+    ):
         if image.family == "apt":
             _apt(box)
         else:

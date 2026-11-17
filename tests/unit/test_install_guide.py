@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 
 from docblocks import GUIDE, SITE, blocks
+from refusals import APT_DEFAULT, DNF_PREFIX, REFUSALS, SQV_TAIL
 from setupkit import repo, sources
 
 
@@ -35,6 +36,26 @@ def test_the_guide_has_both_flows_and_removes_what_it_installs() -> None:
     for family in ("apt", "dnf"):
         assert any(b.family == family and not b.remove for b in found)
         assert any(b.family == family and b.remove for b in found)
+
+
+def test_the_guide_quotes_what_each_client_reports_after_a_key_rotation() -> None:
+    text = " ".join(GUIDE.read_text(encoding="utf-8").split())
+    assert f"`{APT_DEFAULT}`" in text
+    assert DNF_PREFIX.strip() in text
+    for refusal in REFUSALS.values():
+        assert refusal.removeprefix(DNF_PREFIX) in text, refusal
+    # which distributions the key drill measured each text on
+    assert set(REFUSALS) == {
+        "debian-trixie",
+        "almalinux-8",
+        "almalinux-9",
+        "almalinux-10",
+        "fedora-44",
+    }
+    assert f'"{SQV_TAIL}"' in text
+    assert "Debian 13: `Missing key`" in text
+    assert "`Bad GPG signature` on Enterprise Linux 8 and 9" in text
+    assert "`Signing key not found` on Enterprise Linux 10 and Fedora" in text
 
 
 def test_the_guide_uses_one_placeholder_for_the_extension_and_one_for_the_fingerprint() -> None:

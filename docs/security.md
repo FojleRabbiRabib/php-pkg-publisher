@@ -59,8 +59,9 @@ package signature.
   expires; the repository keeps signing with the old subkey; and it switches to the new one at
   least 120 days after the keyring shipped and at least 14 days before the old one expires.
   Clients with the new keyring verify before and after the switch. Clients without it fail at the
-  switch (apt: `NO_PUBKEY`; dnf: `Signing key not found`) and recover as described in
-  [`installation.md`](installation.md).
+  switch and recover as described in [`installation.md`](installation.md), which quotes what each
+  client reports. The key drill (`tests/container/test_key_drill.py`) proves both outcomes, on
+  every tested distribution, with throwaway keys.
 - **Expiry is weaker than revocation on some clients.** On Debian 13's apt (`sqv`), a signature
   made while a subkey was valid is still accepted after it expired. There, a revocation shipped
   in a keyring update is the control.

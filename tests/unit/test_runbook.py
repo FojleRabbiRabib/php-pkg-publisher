@@ -168,6 +168,11 @@ def test_the_outside_watch_section_names_what_the_workflow_and_the_script_use() 
     assert "made or served more than 4 days ago" in TEXT
 
 
+def test_the_rotation_section_names_the_key_drill_that_exists() -> None:
+    assert "pytest -m container tests/container/test_key_drill.py" in TEXT
+    assert (ROOT / "tests" / "container" / "test_key_drill.py").is_file()
+
+
 def test_the_notes_hold_only_placeholders_no_fingerprint_and_no_address() -> None:
     allowed = {
         "<publisher-user>",

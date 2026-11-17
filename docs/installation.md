@@ -147,8 +147,11 @@ Extensions and the keyring package upgrade with the rest of the system (`apt-get
 
 ## A server that no longer accepts the repository
 
-If `apt-get update` reports `NO_PUBKEY` or `dnf` reports `Signing key not found` after the
-repository switched to a new signing key, the keyring on that server predates the switch. Repeat
+After the repository switched to a new signing key, a server whose keyring predates the switch
+cannot verify it. `apt-get update` reports `NO_PUBKEY` (Debian 13: `Missing key`, "which is needed
+to verify signature"), and the previous index files stay in use. `dnf` reports
+`repomd.xml GPG signature verification error:` followed by `Bad GPG signature` on Enterprise Linux
+8 and 9, or `Signing key not found` on Enterprise Linux 10 and Fedora. Repeat
 the download and install step of your flow: it brings the current keyring, and the `rabib-release`
 package also removes dnf's cached copy of the old repository key, which EL10 and Fedora otherwise
 keep. Then compare the fingerprint again.

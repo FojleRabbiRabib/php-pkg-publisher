@@ -225,6 +225,19 @@ order:
    `signing.fingerprint` (and `signing.certificate`) to the new subkey. Never sign with both.
 4. Keep the old subkey's revocation certificate offline.
 
+Before a rotation, run the key drill from a checkout. It needs docker with the pinned images
+(`tests/container/images.py`), the development tools of `requirements-dev.txt`, and the host tools
+the tests build with: `apt-utils`, `createrepo-c`, `dpkg-dev`, `gnupg`, `gpgv`, `rpm` and
+`rpm2cpio`:
+
+```sh
+pytest -m container tests/container/test_key_drill.py
+```
+
+It rotates a throwaway key on every tested distribution: a client with the old keyring must
+refuse the repository after the switch, with the message `installation.md` quotes, and the same
+client must verify it and install after it upgrades the keyring package.
+
 The publisher refuses to sign with a subkey that expires before the metadata's `Valid-Until`.
 Clients that missed the new keyring recover as described in [`installation.md`](installation.md);
 the reasoning is in [`security.md`](security.md).
