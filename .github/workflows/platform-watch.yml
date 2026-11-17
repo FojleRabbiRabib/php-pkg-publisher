@@ -1,0 +1,25 @@
+name: Platform watch
+
+# The outside check of the public site, from a runner that shares nothing with the publishing host.
+# It is started by hand until the site is live; the weekly schedule is added at the cutover.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Check the public site
+        env:
+          PYTHONPATH: .
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: python tools/platform_watch.py --site https://pkg.rabib.me --pin-file deploy/primary-fingerprint.txt --products products.yml --notify

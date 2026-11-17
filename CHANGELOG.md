@@ -243,6 +243,15 @@ All notable changes to this project are documented here. The format follows
 - `python -m publisher --config publisher.yml requeue <repo> <tag>`: lifts a failure or a
   quarantine so the next run tries the tag again. It takes the run lock and refuses a tag with no
   recorded failure.
+- Weekly outside watch (`tools/platform_watch.py`, started by hand from the `Platform watch`
+  workflow until the site is live): from a runner, it takes the primary key of the served keyring
+  package and compares it with the pinned fingerprint, checks that `InRelease` and the six
+  `repomd.xml.asc` files verify against that key, that the `InRelease` `Date` is at most 4 days old
+  with at least 7 days of `Valid-Until` left, that each signature file was made (by the signature's
+  own time) and served (by `Last-Modified`) at most 4 days ago, and that the first listed deb and
+  rpm, whose indexes must match the signed `InRelease` and `repomd.xml`, answer a GET with 302 to
+  the exact GitHub release asset of a declared product. An empty package list or a placeholder pin
+  fails. A failure goes to the chat when the two secrets are set, and fails the run.
 - `products.yml` entries now require `extension`, the name inside package names
   (`php8.3-<extension>`); two products cannot share one.
 

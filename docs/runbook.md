@@ -168,6 +168,36 @@ The other host tools come from the distribution: `apt-utils`, `createrepo-c`, `g
 5. Check that a tampered bundle still fails.
 6. Record the new version.
 
+## The outside watch
+
+The hourly watch needs a living publishing host. The `Platform watch` workflow
+(`.github/workflows/platform-watch.yml`) is the check from outside: a GitHub runner fetches the
+public site and fails, and sends a chat message, when:
+
+- the primary key of the served keyring package is not the one pinned in
+  `deploy/primary-fingerprint.txt`;
+- `InRelease` or one of the six `repomd.xml.asc` files does not verify against that key;
+- the `InRelease` `Date` is older than 4 days or its `Valid-Until` is fewer than 7 days away;
+- a signature file was made or served more than 4 days ago;
+- the first deb and rpm the indexes list (which must match the signed metadata) do not answer 302
+  with the exact GitHub Releases URL of a product in `products.yml`, or no package is listed.
+
+The pin file holds the primary fingerprint, which does not change when a signing subkey rotates:
+edit it only with a new master key, in the same change as its keyring release. Until the key
+ceremony it holds a placeholder, and the watch fails on it by design. The workflow is started by
+hand (Actions, `Platform watch`) until the site is live; the weekly schedule is added at the
+cutover. To run it from a checkout, which needs `gpg`, `gpgv` and `dpkg-deb`:
+
+```sh
+PYTHONPATH=. python3 tools/platform_watch.py --site https://pkg.rabib.me \
+  --pin-file deploy/primary-fingerprint.txt --products products.yml
+```
+
+It prints one `FAIL:` line for each problem and exits 1, or prints `PLATFORM WATCH PASSED`. To
+get a chat message too, add `--notify` with the repository secrets `TELEGRAM_CHAT_ID` and
+`TELEGRAM_BOT_TOKEN` set in the environment (in the workflow they come from the repository's
+Actions secrets); without them the failed run is the notice.
+
 ## Deploying a change
 
 The host runs a signed tag, deployed by hand, never an automatic pull:

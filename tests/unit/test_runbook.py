@@ -11,6 +11,8 @@ import re
 from pathlib import Path
 from typing import Final
 
+import platform_watch
+
 from publisher import admit, config, generation, signer, watch
 from publisher.__main__ import _parser
 from publisher.settings import DIRECTORIES, load_settings
@@ -146,6 +148,24 @@ def test_the_numbers_quoted_are_the_codes() -> None:
     assert admit.QUARANTINE_AGE_SECONDS == 3 * 86400
     assert "at least 5 times" in TEXT
     assert "at least\n3 days old" in TEXT
+
+
+def test_the_outside_watch_section_names_what_the_workflow_and_the_script_use() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "platform-watch.yml").read_text(encoding="utf-8")
+    for name in ("TELEGRAM_CHAT_ID", "TELEGRAM_BOT_TOKEN"):
+        assert f"`{name}`" in TEXT
+        assert f"{name}: ${{{{ secrets.{name} }}}}" in workflow
+    assert "deploy/primary-fingerprint.txt" in TEXT
+    assert "--pin-file deploy/primary-fingerprint.txt --products products.yml" in workflow
+    assert "--pin-file deploy/primary-fingerprint.txt --products products.yml" in TEXT.replace(
+        " \\\n  ", " "
+    )
+    assert "(Actions, `Platform watch`)" in TEXT
+    assert "name: Platform watch" in workflow
+    assert (platform_watch.DATE_MAX_AGE_DAYS, platform_watch.VALID_UNTIL_MIN_DAYS) == (4, 7)
+    assert platform_watch.SIGNATURE_MAX_AGE_DAYS == 4
+    assert "`Date` is older than 4 days or its `Valid-Until` is fewer than 7 days away" in TEXT
+    assert "made or served more than 4 days ago" in TEXT
 
 
 def test_the_notes_hold_only_placeholders_no_fingerprint_and_no_address() -> None:

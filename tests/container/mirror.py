@@ -6,13 +6,15 @@ The redirect is the shipped `web/docroot.htaccess` rule, read by `htaccess.redir
 host in its `Location` is swapped for this server, because a client in a container cannot reach
 github.com for a fake release. Everything else is a plain file under `current/`. `tamper` names
 tree paths whose middle byte is flipped on the way out, and `missing` names paths answered with
-404, to show a client refuses them.
+404, to show a client refuses them. Every tree file carries a `Last-Modified` of its own file time,
+or the time `modified` gives for its path.
 """
 
 from __future__ import annotations
 
 import threading
 from collections.abc import Mapping
+from email.utils import formatdate
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from types import TracebackType
@@ -30,6 +32,7 @@ class Mirror:
     def __init__(self, rig: Rig, files: Mapping[str, bytes] | None = None) -> None:
         self.tamper: set[str] = set()
         self.missing: set[str] = set()
+        self.modified: dict[str, float] = {}
         self.redirects: list[str] = []
         self._rig = rig
         self._files = dict(files or {})
@@ -91,9 +94,19 @@ class Mirror:
             return
         request.send_response(200)
         request.send_header("Content-Length", str(len(body)))
+        stamp = self._modified(PurePosixPath(path.removeprefix("/")).as_posix())
+        if stamp is not None:
+            request.send_header("Last-Modified", formatdate(stamp, usegmt=True))
         request.end_headers()
         if send_body:
             request.wfile.write(body)
+
+    def _modified(self, name: str) -> float | None:
+        """`Last-Modified` of a tree file: what `modified` says, else the file's own time."""
+        if name in self.modified:
+            return self.modified[name]
+        file = self._rig.current / name
+        return file.stat().st_mtime if file.is_file() else None
 
     def _body(self, path: str) -> bytes | None:
         relative = PurePosixPath(path.removeprefix("/"))
