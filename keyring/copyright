@@ -1,0 +1,14 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: php-pkg-publisher
+Source: https://github.com/FojleRabbiRabib/php-pkg-publisher
+Comment: SPDX-License-Identifier: Apache-2.0
+
+Files: *
+Copyright: 2026 Fojle Rabbi (Rabib)
+License: Apache-2.0
+
+License: Apache-2.0
+ Licensed under the Apache License, Version 2.0. The full text is in
+ /usr/share/common-licenses/Apache-2.0 and in the LICENSE file of the source
+ repository; the attribution notice that must travel with redistribution is
+ its NOTICE file.

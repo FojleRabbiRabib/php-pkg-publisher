@@ -4,17 +4,15 @@ from __future__ import annotations
 
 import json
 import os
-import socket
-import threading
 import time
 import urllib.request
-from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from collections.abc import Mapping
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 
 import pytest
+from servers import local_server, raw_server, reply
 
 from publisher import feed
 from publisher.feed import (
@@ -572,73 +570,11 @@ class _Local(HttpsTransport):
         return [*super()._handlers(), urllib.request.HTTPHandler()]
 
 
-@contextmanager
-def _raw_server(payload: bytes) -> Iterator[str]:
-    """Answer one connection with raw bytes, to produce malformed HTTP."""
-    listener = socket.socket()
-    listener.bind(("127.0.0.1", 0))
-    listener.listen(1)
-    listener.settimeout(5)
-
-    def serve() -> None:
-        try:
-            connection, _ = listener.accept()
-        except OSError:
-            return
-        with connection:
-            connection.recv(65536)
-            connection.sendall(payload)
-
-    thread = threading.Thread(target=serve, daemon=True)
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{listener.getsockname()[1]}"
-    finally:
-        listener.close()
-        thread.join()
-
-
-@contextmanager
-def _server(
-    handler: Callable[[BaseHTTPRequestHandler], None],
-) -> Iterator[tuple[str, list[dict[str, str]]]]:
-    seen: list[dict[str, str]] = []
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:
-            seen.append({key.lower(): value for key, value in self.headers.items()})
-            handler(self)
-
-        def log_message(self, format: str, *args: Any) -> None:
-            return
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{server.server_port}", seen
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join()
-
-
-def _reply(
-    status: int, body: bytes = b"", **headers: str
-) -> Callable[[BaseHTTPRequestHandler], None]:
-    def respond(request: BaseHTTPRequestHandler) -> None:
-        request.send_response(status)
-        for key, value in headers.items():
-            request.send_header(key.replace("_", "-"), value)
-        request.send_header("Content-Length", str(len(body)))
-        request.end_headers()
-        request.wfile.write(body)
-
-    return respond
-
-
 def test_transport_returns_status_lowercase_headers_and_body() -> None:
-    with _server(_reply(200, b"[]", Content_Type="application/json", ETag='"e"')) as (base, seen):
+    with local_server(reply(200, b"[]", Content_Type="application/json", ETag='"e"')) as (
+        base,
+        seen,
+    ):
         response = _Local("tok")(base + "/x", {"Accept": "a", "User-Agent": "ua"})
     assert response.status == 200
     assert response.body == b"[]"
@@ -650,23 +586,23 @@ def test_transport_returns_status_lowercase_headers_and_body() -> None:
 
 
 def test_transport_without_a_token_sends_no_authorization() -> None:
-    with _server(_reply(200)) as (base, seen):
+    with local_server(reply(200)) as (base, seen):
         _Local()(base + "/x", {})
     assert "authorization" not in seen[0]
 
 
 def test_transport_reports_304_and_error_statuses_without_raising() -> None:
-    with _server(_reply(304)) as (base, _):
+    with local_server(reply(304)) as (base, _):
         assert _Local("tok")(base + "/x", {}).status == 304
-    with _server(_reply(404, b"nope")) as (base, _):
+    with local_server(reply(404, b"nope")) as (base, _):
         response = _Local("tok")(base + "/x", {})
     assert (response.status, response.body) == (404, b"nope")
 
 
 def test_transport_never_follows_a_redirect_or_forwards_the_token() -> None:
     with (
-        _server(_reply(200, b"stolen")) as (target, target_seen),
-        _server(_reply(302, Location=target + "/steal")) as (base, seen),
+        local_server(reply(200, b"stolen")) as (target, target_seen),
+        local_server(reply(302, Location=target + "/steal")) as (base, seen),
     ):
         response = _Local("tok")(base + "/x", {})
     assert response.status == 302
@@ -676,9 +612,9 @@ def test_transport_never_follows_a_redirect_or_forwards_the_token() -> None:
 
 def test_transport_enforces_the_body_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(feed, "MAX_BODY_BYTES", 10)
-    with _server(_reply(200, b"x" * 10)) as (base, _):
+    with local_server(reply(200, b"x" * 10)) as (base, _):
         assert _Local()(base + "/x", {}).body == b"x" * 10
-    with _server(_reply(200, b"x" * 11)) as (base, _), pytest.raises(FeedError, match="larger"):
+    with local_server(reply(200, b"x" * 11)) as (base, _), pytest.raises(FeedError, match="larger"):
         _Local()(base + "/x", {})
 
 
@@ -687,9 +623,9 @@ def test_transport_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def slow(request: BaseHTTPRequestHandler) -> None:
         time.sleep(1.0)
-        _reply(200)(request)
+        reply(200)(request)
 
-    with _server(slow) as (base, _), pytest.raises(FeedError, match="request failed"):
+    with local_server(slow) as (base, _), pytest.raises(FeedError, match="request failed"):
         _Local()(base + "/x", {})
 
 
@@ -712,13 +648,13 @@ def test_transport_stops_a_slow_drip_at_the_request_deadline(
             return
 
     started = time.monotonic()
-    with _server(drip) as (base, _), pytest.raises(FeedError, match="took too long"):
+    with local_server(drip) as (base, _), pytest.raises(FeedError, match="took too long"):
         _Local()(base + "/x", {})
     assert time.monotonic() - started < 5.0
 
 
 def test_transport_failures_never_leak_the_token() -> None:
-    with _server(_reply(200)) as (base, _):
+    with local_server(reply(200)) as (base, _):
         pass
     with pytest.raises(FeedError) as caught:
         _Local("secrettoken")(base + "/x", {})
@@ -735,7 +671,7 @@ def test_transport_failures_never_leak_the_token() -> None:
     ids=["bad-status-line", "truncated-chunked-body"],
 )
 def test_malformed_http_is_reported_as_a_feed_error(payload: bytes) -> None:
-    with _raw_server(payload) as base, pytest.raises(FeedError, match="request failed"):
+    with raw_server(payload) as base, pytest.raises(FeedError, match="request failed"):
         _Local("secrettoken")(base + "/x", {})
 
 
@@ -752,7 +688,10 @@ def test_repeated_security_headers_are_refused() -> None:
         request.send_header("Content-Length", "0")
         request.end_headers()
 
-    with _server(two_links) as (base, _), pytest.raises(FeedError, match="repeats the link header"):
+    with (
+        local_server(two_links) as (base, _),
+        pytest.raises(FeedError, match="repeats the link header"),
+    ):
         _Local()(base + "/x", {})
 
 
@@ -770,5 +709,5 @@ def test_production_transport_speaks_only_https_and_never_sends_the_token_in_cle
 def test_transport_ignores_proxy_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
     monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
-    with _server(_reply(200, b"ok")) as (base, _):
+    with local_server(reply(200, b"ok")) as (base, _):
         assert _Local()(base + "/x", {}).body == b"ok"

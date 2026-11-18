@@ -1,0 +1,17 @@
+{
+    "name": "fojlerabbirabib/php-pkg-publisher",
+    "description": "Development tooling for the webhook receiver; the receiver itself has no dependencies.",
+    "license": "Apache-2.0",
+    "type": "project",
+    "require": {
+        "php": ">=8.3"
+    },
+    "require-dev": {
+        "phpstan/phpstan": "2.3.5",
+        "squizlabs/php_codesniffer": "4.0.4"
+    },
+    "config": {
+        "sort-packages": true,
+        "optimize-autoloader": true
+    }
+}

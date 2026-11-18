@@ -1,0 +1,9 @@
+version=0.2.0
+php=8.3
+php_api=20230831
+arch=x86_64
+os=linux
+libc=glibc
+glibc_symbol=GLIBC_2.34
+commit=0becd8f6d5319fce9a72fb0abeb1ec257df22146
+sha256=1f238210f8b615877ffbf8b6560336ee98e2ede082d16766763ebf48d95de5c4

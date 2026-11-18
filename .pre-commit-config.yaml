@@ -29,6 +29,23 @@ repos:
         language: unsupported
         pass_filenames: false
         always_run: true
+      - id: phpcs
+        name: phpcs
+        entry: vendor/bin/phpcs
+        language: unsupported
+        types: [php]
+        pass_filenames: false
+      - id: phpstan
+        name: phpstan
+        entry: vendor/bin/phpstan analyse --no-progress
+        language: unsupported
+        types: [php]
+        pass_filenames: false
+      - id: shellcheck
+        name: shellcheck
+        entry: shellcheck
+        language: unsupported
+        types: [shell]
       - id: pytest
         name: pytest
         entry: pytest -q
@@ -69,13 +86,16 @@ repos:
         entry: end-of-file-fixer
         language: unsupported
         types: [text]
+        exclude: ^tests/fixtures/sigstore/
       - id: mixed-line-ending
         name: fix mixed line endings
         entry: mixed-line-ending --fix=lf
         language: unsupported
         types: [text]
+        exclude: ^tests/fixtures/sigstore/
       - id: trailing-whitespace
         name: trim trailing whitespace
         entry: trailing-whitespace-fixer --markdown-linebreak-ext=md
         language: unsupported
         types: [text]
+        exclude: ^tests/fixtures/sigstore/

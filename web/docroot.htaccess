@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Fojle Rabbi (Rabib)
+#
+# The docroot .htaccess of the package site (OpenLiteSpeed, `autoLoadHtaccess` on). Install it as
+# `<docroot>/.htaccess`, owned by the publisher user and read-only to the site user.
+#
+# Three rules, in this order, and nothing else:
+#   1. a request whose raw request line names a .php file, also spelled with percent-escapes
+#      (.p%68p, %2ephp), is a 404, so the receiver is reachable only through its extensionless
+#      route;
+#   2. /hooks/sync is served internally by hooks/sync.php (the receiver);
+#   3. /pool/<product>/<tag>/<file>, and /apt/pool/... (apt's Filename: is relative to /apt/),
+#      is a 302 to the GitHub release asset. The patterns are allow-lists that mirror the
+#      publisher's own repo name, release tag and asset name rules (tests/unit/test_htaccess.py
+#      keeps them in step); the target host and owner are fixed, so no request can pick another.
+#
+# Response headers cannot be set here (OpenLiteSpeed ignores Header and Expires in .htaccess);
+# the cache bypass and the removal of X-Powered-By are Cloudflare rules.
+
+RewriteEngine On
+
+RewriteCond %{THE_REQUEST} (?:\.|%2e)(?:p|%70)(?:h|%68)(?:p|%70)(?:[/?[:space:]]|%2f|%3f|%00|$) [NC]
+RewriteRule ^ - [R=404,L]
+
+RewriteRule ^hooks/sync$ hooks/sync.php [L]
+
+RewriteRule ^(?:apt/)?pool/([a-z0-9](?:[a-z0-9._-]{0,98}[a-z0-9_-])?)/(v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[a-z]+[0-9]+)?)/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$ https://github.com/FojleRabbiRabib/$1/releases/download/$2/$3 [R=302,L]
