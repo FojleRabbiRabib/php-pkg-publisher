@@ -2,6 +2,7 @@
 # Copyright 2026 Fojle Rabbi (Rabib)
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 from collections.abc import Generator, Iterator
@@ -853,3 +854,26 @@ def test_a_skipped_product_still_raises_its_quarantine_alerts(world: World) -> N
     world.feeds[A.repo] = feed.NotFound("repository or releases not found (404)")
     kinds = [kind for _, _, kind in _kinds(world.run(A))]
     assert sorted(kinds) == ["product-error", "quarantine-alert"]
+
+
+def test_a_quarantined_tag_is_not_retried_after_its_backoff_when_the_listing_changed(
+    world: World,
+) -> None:
+    _quarantine(world, last_alert=NOW)  # next_retry is a day in the past
+    world.feeds[A.repo] = _listing(_release(A, "v1.0.0"), etag='"listing-2"')
+    report = world.run(A)
+    assert world.list_calls == [("a-php", ETAG)]  # a changed listing is returned, not a 304
+    assert world.verify_calls == []
+    assert report.events == ()
+    assert world.state(A.repo).failed["v1.0.0"].quarantined
+
+
+def test_an_asset_without_a_sha256_digest_stops_the_stage_and_admits_nothing(
+    world: World,
+) -> None:
+    release = _release(A, "v1.0.0")
+    odd = tuple(dataclasses.replace(a, digest="md5:" + "0" * 32) for a in release.assets)
+    world.feeds[A.repo] = _listing(dataclasses.replace(release, assets=odd))
+    report = world.run(A)
+    assert report.stopped is not None and "no usable digest" in report.stopped
+    assert "v1.0.0" not in world.state(A.repo).admitted

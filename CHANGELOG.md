@@ -259,6 +259,16 @@ All notable changes to this project are documented here. The format follows
   clean-up of `rabib-release`, EL10 and Fedora 44 fail the drill.
 - `products.yml` entries now require `extension`, the name inside package names
   (`php8.3-<extension>`); two products cannot share one.
+- Unit tests for checks that no test covered: the signature status of `InRelease` alone (a wrong
+  subkey, another digest, two signatures), the armor shape of a signature, a pinned certificate that
+  is a link, the message for an expired primary key, the `Valid-Until` boundary, a quarantined tag
+  that a changed listing must not retry, a package in the published tree, a `current` that points
+  to a missing generation, a carried store file whose content does not match its name, a key file
+  with two certificates, a failed `rpmkeys --import`, a `cosign initialize` that fails but leaves a
+  valid file, an asset digest that is not sha256, and three receiver checks (a repeated delivery in
+  another letter case, the duplicate window, and the JSON depth cap, on both sides of 16 levels).
+- A time limit for every test (`pytest-timeout`: 120 seconds, 20 minutes for a container test), so a
+  test that hangs fails with its stack instead of stalling the run.
 
 ### Changed
 

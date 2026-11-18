@@ -17,6 +17,16 @@ from publisher.config import Product
 A = product("a-php", "a")
 B = product("b-php", "b")
 
+# The default `timeout` of pyproject.toml suits a unit test; a container test builds images and runs
+# distro installs, and its session fixtures count against the first test that uses them.
+CONTAINER_TIMEOUT = 1200
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    for item in items:
+        if item.get_closest_marker("container") and not item.get_closest_marker("timeout"):
+            item.add_marker(pytest.mark.timeout(CONTAINER_TIMEOUT))
+
 
 @pytest.fixture(scope="session", autouse=True)
 def _free_disk(request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory) -> None:

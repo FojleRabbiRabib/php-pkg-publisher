@@ -1037,3 +1037,39 @@ def test_a_restrictive_umask_does_not_hide_the_served_tree(world: World, tmp_pat
                 hidden.append(f"{path.relative_to(root)} {oct(stat.S_IMODE(mode))}")
     assert hidden == [], "\n".join(hidden)
     assert (site.root / "current").is_symlink()
+
+
+def test_a_package_inside_the_tree_is_refused(site: Site, world: World, tmp_path: Path) -> None:
+    copy = tmp_path / "leaky"
+    shutil.copytree(world.tree_a, copy, symlinks=True)
+    (copy / "dists/stable/php8.3-p_1.0.0_amd64.deb").write_bytes(b"package bytes")
+    with pytest.raises(GenerationError, match="a package or a link in the tree"):
+        generation.install(site, copy, world.entries_a, now=time.time())
+    assert not site.current.exists()
+
+
+def test_current_pointing_to_a_generation_that_does_not_exist_is_refused(
+    site: Site, world: World
+) -> None:
+    site.current.symlink_to("versions/00000007-20260101T000000Z")
+    with pytest.raises(GenerationError, match="does not exist"):
+        _install(site, world.tree_a, world.entries_a, time.time())
+
+
+def test_a_corrupt_stored_file_is_not_carried_into_the_next_generation(
+    site: Site, world: World, tmp_path: Path
+) -> None:
+    now = time.time()
+    first = _install(site, world.tree_a, world.entries_a, now)
+    other_root = tmp_path / "other"
+    other_root.mkdir(mode=0o755)
+    other = generation.open_site(other_root)
+    _install(other, world.tree_b, world.entries_b, now)
+    only_for_old_clients = sorted(_stored(site) - _stored(other))
+    assert only_for_old_clients, "the old index must have files the new one lacks"
+    victim = site.store / only_for_old_clients[0]
+    victim.unlink()  # breaks the hard link, so the first generation itself stays intact
+    victim.write_bytes(b"not what its name promises")
+    with pytest.raises(GenerationError, match="does not match its name"):
+        _install(site, world.tree_b, world.entries_b, now + 60)
+    assert _current_id(site) == first

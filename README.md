@@ -65,6 +65,9 @@ python tools/lint_pins.py
 shellcheck setup.sh
 ```
 
+Every test has a time limit (120 seconds; 20 minutes for a container test), so a hung test fails
+instead of stalling the run.
+
 The container layer is not part of bare `pytest`. It needs a running docker and the nine pinned
 images, which containers use without pulling:
 

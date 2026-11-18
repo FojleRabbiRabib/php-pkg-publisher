@@ -453,3 +453,38 @@ def test_the_real_server_reads_only_the_declared_length(
     # the 10 bytes read match the signature and are not JSON: a signed bad payload, not a 413
     assert reply.startswith(b"HTTP/1.1 400")
     assert not world.nudge.exists()
+
+
+def test_a_repeat_in_other_letter_case_is_the_same_delivery(world: World) -> None:
+    # the default GUID is all digits, so it cannot show a difference in case
+    guid = "abcdef01-2222-3333-4444-5555555555ab"
+    assert world.post(delivery=guid) == 202
+    world.nudge.unlink()
+    assert world.post(delivery=guid.upper(), now=NOW + 5) == 200
+    assert not world.nudge.exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_the_duplicate_window_is_checked_even_when_the_sweep_could_not_remove_the_entry(
+    world: World,
+) -> None:
+    assert world.post() == 202
+    world.nudge.unlink()
+    guid_dir = world.nudge_dir / "guid"
+    guid_dir.chmod(0o555)  # unlink fails, so the stale entry stays
+    try:
+        assert world.post(now=NOW + 121) == 202
+        assert len(list(guid_dir.iterdir())) == 1
+    finally:
+        guid_dir.chmod(0o700)
+
+
+def test_a_signed_body_nested_deeper_than_sixteen_levels_is_400(world: World) -> None:
+    body = json.dumps({"action": "published", "x": json.loads("[" * 15 + "]" * 15)})  # 17 levels
+    assert world.post(body=body) == 400
+    assert not world.nudge.exists()
+
+
+def test_a_signed_body_nested_sixteen_levels_deep_is_accepted(world: World) -> None:
+    body = json.dumps({"action": "published", "x": json.loads("[" * 14 + "]" * 14)})  # 16 levels
+    assert world.post(body=body) == 202

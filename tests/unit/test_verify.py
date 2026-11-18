@@ -819,3 +819,22 @@ def test_a_failed_setup_leaves_no_working_area(run: Run, tmp_path: Path) -> None
     with pytest.raises(ToolError):
         run.verifier()
     assert list(run.work.iterdir()) == []
+
+
+def test_a_key_file_with_two_certificates_stops_the_run(
+    run: Run, keys: dict[str, Key], tmp_path: Path
+) -> None:
+    both = tmp_path / "both.asc"
+    both.write_bytes(run.key.public.read_bytes() + b"\n" + keys["other"].public.read_bytes())
+    run.key = dataclasses.replace(run.key, public=both)
+    with pytest.raises(ToolError, match="exactly one primary rpm key"):
+        run.verifier()
+
+
+def test_a_key_that_rpmkeys_cannot_import_stops_the_run(run: Run, tmp_path: Path) -> None:
+    script = tmp_path / "rpmkeys"
+    script.write_text('#!/bin/sh\nfor a in "$@"; do [ "$a" = --import ] && exit 1; done\nexit 0\n')
+    script.chmod(0o755)
+    run.tools = dataclasses.replace(run.tools, rpmkeys=script)
+    with pytest.raises(ToolError, match="rpmkeys cannot import"):
+        run.verifier()

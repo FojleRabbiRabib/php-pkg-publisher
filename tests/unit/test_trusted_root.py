@@ -225,3 +225,12 @@ def test_a_temporary_file_of_a_killed_run_is_removed_when_old_enough(setup: Setu
     setup.obtain(COPY_FIXTURE)
     assert not old.exists()
     assert recent.exists()
+
+
+def test_a_refresh_that_exits_non_zero_is_a_failed_refresh_even_if_it_left_a_valid_file(
+    setup: Setup,
+) -> None:
+    setup.copy(age=3 * DAY)
+    root = setup.obtain(COPY_FIXTURE + "exit 1\n")
+    assert root.refreshed is False
+    assert root.age_seconds == 3 * DAY
