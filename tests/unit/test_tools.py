@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import time
 from pathlib import Path
 
@@ -107,6 +108,52 @@ def test_run_stops_what_a_finished_program_left_behind(tmp_path: Path) -> None:
     run([Path("/bin/sh"), "-c", f"(sleep 1; touch {marker}) &"], home=tmp_path)
     time.sleep(1.5)
     assert not marker.exists()
+
+
+def test_run_kills_the_group_of_a_finished_program_before_reaping_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After the program is reaped its process id is free for any other process to take."""
+    states: list[str] = []
+    killpg = os.killpg
+
+    def spy(group: int, number: int) -> None:
+        try:
+            stat = Path(f"/proc/{group}/stat").read_text(encoding="ascii")
+            states.append(stat.rsplit(")", 1)[1].split()[0])
+        except OSError:
+            states.append("gone")
+        killpg(group, number)
+
+    monkeypatch.setattr(os, "killpg", spy)
+    assert run([Path("/bin/true")], home=tmp_path).code == 0
+    assert states == ["Z"]
+
+
+def test_run_fails_when_the_exit_status_was_lost(tmp_path: Path) -> None:
+    """With SIGCHLD ignored the kernel reaps the program, so its exit code cannot be known."""
+    before = signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+    try:
+        with pytest.raises(ToolError, match="exit status of the program was lost"):
+            run([Path("/bin/false")], home=tmp_path)
+    finally:
+        signal.signal(signal.SIGCHLD, before)
+
+
+def test_run_polls_quickly_at_first_and_backs_off_to_the_poll_interval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pauses: list[float] = []
+    sleep = time.sleep
+
+    def spy(seconds: float) -> None:
+        pauses.append(seconds)
+        sleep(seconds)
+
+    monkeypatch.setattr(time, "sleep", spy)
+    run([Path("/bin/sleep"), "0.1"], home=tmp_path)
+    assert pauses[:6] == [0.0005, 0.001, 0.002, 0.004, 0.008, 0.01]
+    assert set(pauses[5:]) == {tools.POLL_SECONDS}
 
 
 def test_run_stops_a_timed_out_program(tmp_path: Path) -> None:

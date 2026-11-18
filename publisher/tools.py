@@ -25,6 +25,7 @@ SEARCH_PATH: Final = "/usr/local/bin:/usr/bin:/bin"
 CHILD_PATH: Final = "/usr/bin:/bin"
 MAX_OUTPUT_BYTES: Final = 64 * 1024
 DEFAULT_TIMEOUT_SECONDS: Final = 60.0
+FIRST_POLL_SECONDS: Final = 0.0005
 POLL_SECONDS: Final = 0.01
 
 
@@ -96,6 +97,20 @@ def _kill_group(process: subprocess.Popen[bytes]) -> None:
         os.killpg(process.pid, signal.SIGKILL)
 
 
+def _exited(process: subprocess.Popen[bytes]) -> bool:
+    """Whether the program has ended, without reaping it.
+
+    An unreaped program still holds its process id, which is also its group id, so the id cannot
+    pass to another process before `_kill_group` has run.
+    """
+    try:
+        return os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+    except ChildProcessError:
+        # SIGCHLD is ignored in this process, so the kernel reaped the program and its exit
+        # status is lost; its process id may already belong to another process.
+        raise ToolError("the exit status of the program was lost") from None
+
+
 def _stop(process: subprocess.Popen[bytes]) -> None:
     _kill_group(process)
     process.wait()
@@ -131,13 +146,14 @@ def run(
             )
         except OSError as error:
             raise ToolError(f"cannot run {command[0]}: {error.strerror or error}") from error
+        pause = FIRST_POLL_SECONDS
         while True:
-            try:
-                code = process.wait(timeout=POLL_SECONDS)
+            if _exited(process):
                 _kill_group(process)
+                code = process.wait()
                 break
-            except subprocess.TimeoutExpired:
-                pass
+            time.sleep(pause)
+            pause = min(pause * 2, POLL_SECONDS)
             if time.monotonic() > deadline:
                 _stop(process)
                 raise ToolTimeout(f"{name} took longer than {timeout:g}s")

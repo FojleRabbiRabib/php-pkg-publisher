@@ -273,3 +273,7 @@ All notable changes to this project are documented here. The format follows
 - The install guide and the security notes named `NO_PUBKEY` and `Signing key not found` for every
   client. Measured: apt on Debian 13 says `Missing key`, and dnf on Enterprise Linux 8 and 9 says
   `Bad GPG signature`; the guide now quotes each, and a test checks it.
+- A program that had ended was reaped before its process group was killed, so in theory the
+  process id could pass to another process in between. The group is now killed while the ended
+  program is still unreaped, and a test checks the order. A program whose exit status is lost
+  because the process ignores SIGCHLD now fails the run; it used to count as exit code 0.
