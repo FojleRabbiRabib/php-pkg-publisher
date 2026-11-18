@@ -188,6 +188,13 @@ def test_a_reply_that_is_too_large_is_refused() -> None:
         _Local(CREDS, base=base).send("x", silent=True)
 
 
+def test_a_reply_nested_deeper_than_the_parser_allows_is_a_delivery_error() -> None:
+    deep = b"[" * 30000 + b"]" * 30000  # under the size limit, over the recursion limit
+    with local_server(reply(200, deep)) as (base, _), pytest.raises(DeliveryError) as caught:
+        _Local(CREDS, base=base).send("x", silent=True)
+    assert "answered 200" in str(caught.value)
+
+
 def test_the_real_sender_only_speaks_https() -> None:
     with pytest.raises(DeliveryError, match="https"):
         Telegram(CREDS, base="http://example.org").send("x", silent=True)

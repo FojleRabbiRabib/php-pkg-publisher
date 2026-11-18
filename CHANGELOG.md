@@ -289,3 +289,18 @@ All notable changes to this project are documented here. The format follows
   process id could pass to another process in between. The group is now killed while the ended
   program is still unreaped, and a test checks the order. A program whose exit status is lost
   because the process ignores SIGCHLD now fails the run; it used to count as exit code 0.
+- An unusable alert file (owner, mode, shape) made the run raise after it had published, so its
+  nudge was put back and the path unit started the service again until the start limit stopped
+  the webhook runs. The run now logs the alerts, ends with exit 1 and keeps the nudge consumed. A
+  chat-service reply nested too deep for the JSON parser is now a failed delivery, not a crash.
+- A directory named like the nudge file (the web server's group may create one) made every run
+  fail before it started. It is now set aside under another name, with a log line, and counts as
+  a nudge.
+- When publishing raised, the alerts of the admit stage in that pass (a first quarantine, a
+  stopped stage) were never sent. They are sent before the error is raised.
+- A run stopped by SIGTERM (a stop, a reboot, the one-hour timeout) lost the nudge it had consumed,
+  so the release waited for the daily timer. It now puts the nudge back and ends with exit 143,
+  which the service counts as a clean exit (`SuccessExitStatus=143`). The comment of the unit,
+  which said a failed run puts its nudge back, now says which runs do. A program that a tool call
+  had started is now stopped when the run is stopped, not only on a timeout or a flood of output.
+- The hourly watch ended green when its alerts could not be delivered; it now exits 1.

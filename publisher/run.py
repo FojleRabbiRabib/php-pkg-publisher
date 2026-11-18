@@ -97,8 +97,13 @@ def run_pass(
     *,
     now: float,
     log: Callable[[str], None],
+    emit: Callable[[Result], None],
 ) -> Result:
-    """Admit, then publish from what is admitted, even when admitting stopped."""
+    """Admit, then publish from what is admitted, even when admitting stopped.
+
+    `emit` is called once per pass with the pass's alerts, also when publishing raises: then it
+    gets what was collected before, and the error is raised afterwards.
+    """
     alerts: list[Alert] = []
     failure: str | None = None
     log(f"products {products.sha256} exclusions {exclusions.sha256}")
@@ -123,7 +128,16 @@ def run_pass(
     if report.stopped is not None:
         failure = f"admit stopped: {clean(report.stopped)}"
         alerts.append(Alert(kind="stopped", text=failure, urgent=True))
-    published = stages.publish(products, exclusions, now)
+    try:
+        published = stages.publish(products, exclusions, now)
+    except Exception as error:
+        # The admit alerts (a first quarantine, a stopped stage) would otherwise be lost; the
+        # raise still puts the nudge back, and a failing sender must not hide the publish error.
+        try:
+            emit(Result(alerts=tuple(alerts), failure=f"publish failed: {clean(str(error))}"))
+        except Exception as emit_error:
+            log(f"error: alerts not emitted: {type(emit_error).__name__}")
+        raise
     if published.skipped:
         log("publish skipped: nothing changed")
     else:
@@ -156,7 +170,9 @@ def run_pass(
         alerts.append(
             Alert(kind="cleanup-failed", text=clean(f"clean-up failed: {published.retire_error}"))
         )
-    return Result(alerts=tuple(alerts), failure=failure)
+    result = Result(alerts=tuple(alerts), failure=failure)
+    emit(result)
+    return result
 
 
 class LiveStages:
@@ -249,8 +265,8 @@ def run_once(
 ) -> list[Result]:
     """The `run` command: take the lock and make passes while nudges keep arriving.
 
-    `emit` receives each pass's result as soon as the pass ends, so the alerts of a pass that
-    completed are not lost when a later pass raises.
+    `emit` receives each pass's result from `run_pass` as soon as the pass ends, so the alerts of
+    a pass that completed are not lost when a later pass raises.
     """
     with _held(settings) as lock:
 
@@ -264,13 +280,16 @@ def run_once(
                 tools=Tools.locate(),
                 cache=Cache(settings.cache, HttpsFetcher()),
             )
-            result = run_pass(
-                stages, products, exclusions, now=time.time() if now is None else now, log=log
+            return run_pass(
+                stages,
+                products,
+                exclusions,
+                now=time.time() if now is None else now,
+                log=log,
+                emit=emit,
             )
-            emit(result)
-            return result
 
-        return locking.run_passes(lock, settings.nudge, one_pass)
+        return locking.run_passes(lock, settings.nudge, one_pass, log=log)
 
 
 def rollback(

@@ -335,6 +335,7 @@ class Rig:
                 self.exclusions,
                 now=now,
                 log=self.log.append,
+                emit=lambda _: None,
             )
 
     def run_nudged(self, now: float) -> list[run.Result]:
@@ -348,9 +349,10 @@ class Rig:
                     self.exclusions,
                     now=now,
                     log=self.log.append,
+                    emit=lambda _: None,
                 )
 
-            return lock.run_passes(held, self.nudge, one_pass)
+            return lock.run_passes(held, self.nudge, one_pass, log=self.log.append)
 
     def rollback(self, identifier: str, now: float) -> generation.Published:
         with RunLock(self.settings.lock):

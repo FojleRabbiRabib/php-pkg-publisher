@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import configparser
 import shlex
+import signal
 from pathlib import Path
 
 import pytest
@@ -105,6 +106,12 @@ def test_a_restored_nudge_cannot_restart_the_publisher_for_ever() -> None:
     unit = _unit("php-pkg-publisher.service")["Unit"]
     assert int(unit["StartLimitBurst"]) <= 5
     assert int(unit["StartLimitIntervalSec"]) >= 60
+
+
+def test_a_stop_of_the_publisher_is_not_a_failure() -> None:
+    # the run ends with 128 + SIGTERM after it put its nudge back (publisher/__main__.py)
+    service = _unit("php-pkg-publisher.service")["Service"]
+    assert service["SuccessExitStatus"].split() == [str(128 + signal.SIGTERM)]
 
 
 def test_the_timers_start_their_services_and_survive_downtime() -> None:

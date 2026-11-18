@@ -389,6 +389,24 @@ def test_a_failing_check_is_logged_sent_once_and_remembered(
     assert len(sent.texts) == 1  # the same alerts are not repeated within a day
 
 
+def test_an_alert_that_could_not_be_delivered_exits_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class _Down:
+        def send(self, text: str, *, silent: bool) -> None:
+            raise alert.DeliveryError("down")
+
+    now = time_now()
+    _patch_world(monkeypatch, _Sent(), cert_days=5, release=_release(now, now + 14 * DAY))
+    monkeypatch.setattr(alert, "Telegram", lambda credentials: _Down())
+    config = _settings_file(tmp_path, "2099-01-01")
+    (tmp_path / "state").mkdir()
+    assert watch.main(["--config", str(config)]) == 1
+    err = capsys.readouterr().err
+    assert "undelivered alert [origin-certificate]" in err
+    assert "failed: alerts not delivered" in err
+
+
 def test_a_broken_settings_file_exits_one(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

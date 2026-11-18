@@ -14,6 +14,9 @@ it checks four things and alerts, at most once a day for each, on:
 
 The served file is read only for these two dates. Its signature is not checked here: the clients
 do that, and this is a freshness alarm.
+
+The command exits 1 when an alert could not be delivered (every alert is in the journal, and the
+next pass sends it again), so a dead chat service shows as a failed unit and not as a green one.
 """
 
 from __future__ import annotations
@@ -271,9 +274,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             settings.state / "watch-alerts.json",
             log=_stderr,
         )
-        dispatch(alerts, now)
+        delivered = dispatch(alerts, now)
     except (alert.AlertError, config.ConfigError, OSError) as error:
         _stderr(f"failed: {alert.clean(str(error))}")
+        return 1
+    if not delivered:
+        _stderr("failed: alerts not delivered")
         return 1
     return 0
 

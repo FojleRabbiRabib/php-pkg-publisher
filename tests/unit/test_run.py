@@ -2,6 +2,8 @@
 # Copyright 2026 Fojle Rabbi (Rabib)
 from __future__ import annotations
 
+import os
+import signal
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
@@ -61,7 +63,9 @@ class FakeStages:
 
 def _run(stages: FakeStages) -> tuple[run.Result, list[str]]:
     lines: list[str] = []
-    result = run.run_pass(stages, PRODUCTS, EXCLUSIONS, now=1.0, log=lines.append)
+    result = run.run_pass(
+        stages, PRODUCTS, EXCLUSIONS, now=1.0, log=lines.append, emit=lambda _: None
+    )
     return result, lines
 
 
@@ -337,6 +341,59 @@ def test_a_publish_that_raises_after_a_stopped_admit_raises() -> None:
         _run(stages)
 
 
+def _stages_that_cannot_publish() -> FakeStages:
+    stages = FakeStages(report=admit.Report(events=(), stopped="tool missing"))
+
+    def fail(*args: object) -> None:
+        raise generation.GenerationError("disk full")
+
+    stages.publish = fail  # type: ignore[method-assign,assignment]
+    return stages
+
+
+def test_the_admit_alerts_are_emitted_when_publishing_raises() -> None:
+    emitted: list[run.Result] = []
+    with pytest.raises(generation.GenerationError):
+        run.run_pass(
+            _stages_that_cannot_publish(),
+            PRODUCTS,
+            EXCLUSIONS,
+            now=1.0,
+            log=lambda _: None,
+            emit=emitted.append,
+        )
+    (result,) = emitted
+    assert _kinds(result) == ["stopped"]
+    assert result.failure is not None
+    assert result.failure.startswith("publish failed")
+
+
+def test_a_failing_emit_does_not_hide_the_publish_error() -> None:
+    def broken(result: run.Result) -> None:
+        raise alert_module.CredentialsError("no file")
+
+    lines: list[str] = []
+    with pytest.raises(generation.GenerationError, match="disk full"):
+        run.run_pass(
+            _stages_that_cannot_publish(),
+            PRODUCTS,
+            EXCLUSIONS,
+            now=1.0,
+            log=lines.append,
+            emit=broken,
+        )
+    assert "error: alerts not emitted: CredentialsError" in lines
+
+
+def test_a_finished_pass_is_emitted_once_with_the_result_it_returns() -> None:
+    emitted: list[run.Result] = []
+    result = run.run_pass(
+        FakeStages(), PRODUCTS, EXCLUSIONS, now=1.0, log=lambda _: None, emit=emitted.append
+    )
+    assert len(emitted) == 1
+    assert emitted[0] is result
+
+
 class _FakeTelegram:
     sent: ClassVar[list[str]] = []
     fail: ClassVar[bool] = False
@@ -601,6 +658,56 @@ def test_an_unusable_alert_file_fails_the_run_after_the_alerts_were_logged(
     assert "failed:" in err
     _patch_run_once(monkeypatch, [quiet])
     assert main(["--config", str(tmp_path / "publisher.yml"), "run"]) == 1
+
+
+def _patch_live(monkeypatch: pytest.MonkeyPatch, stages: FakeStages) -> None:
+    monkeypatch.setattr(run, "LiveStages", lambda *a, **k: stages)
+    monkeypatch.setattr(Tools, "locate", classmethod(lambda cls: None))
+    monkeypatch.setattr(run, "Cache", lambda *a, **k: None)
+
+
+def test_an_unusable_alert_file_does_not_put_the_nudge_back_or_hide_the_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = _settings(tmp_path)  # no credentials file was written
+    stages = FakeStages()
+    _patch_live(monkeypatch, stages)
+    settings.nudge.write_bytes(b"")
+    assert main(["--config", str(tmp_path / "publisher.yml"), "run"]) == 1
+    assert stages.calls == ["trust", "admit", "publish"]
+    assert not settings.nudge.exists()  # a restored nudge would start the service again at once
+    err = capsys.readouterr().err
+    assert "alert published:" in err
+    assert "failed: alerts not sent" in err
+    assert str(tmp_path) not in err
+
+
+def test_a_stop_signal_puts_the_nudge_back_and_ends_with_exit_143(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    stages = FakeStages()
+
+    def stopped(now: float) -> admit.Report:
+        os.kill(os.getpid(), signal.SIGTERM)
+        raise AssertionError("the stop signal did not interrupt the pass")
+
+    stages.admit = stopped  # type: ignore[method-assign]
+    _patch_live(monkeypatch, stages)
+    settings.nudge.write_bytes(b"")
+
+    def guard(number: int, frame: object) -> None:
+        raise AssertionError("the run did not handle the stop signal")  # not a dead test run
+
+    before = signal.signal(signal.SIGTERM, guard)
+    try:
+        with pytest.raises(SystemExit) as caught:
+            main(["--config", str(tmp_path / "publisher.yml"), "run"])
+        assert signal.getsignal(signal.SIGTERM) is guard
+    finally:
+        signal.signal(signal.SIGTERM, before)
+    assert caught.value.code == 128 + signal.SIGTERM
+    assert settings.nudge.exists()
 
 
 @pytest.mark.parametrize(

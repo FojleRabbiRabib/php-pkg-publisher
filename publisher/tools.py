@@ -147,19 +147,23 @@ def run(
         except OSError as error:
             raise ToolError(f"cannot run {command[0]}: {error.strerror or error}") from error
         pause = FIRST_POLL_SECONDS
-        while True:
-            if _exited(process):
-                _kill_group(process)
-                code = process.wait()
-                break
-            time.sleep(pause)
-            pause = min(pause * 2, POLL_SECONDS)
-            if time.monotonic() > deadline:
+        try:
+            while True:
+                if _exited(process):
+                    _kill_group(process)
+                    code = process.wait()
+                    break
+                time.sleep(pause)
+                pause = min(pause * 2, POLL_SECONDS)
+                if time.monotonic() > deadline:
+                    raise ToolTimeout(f"{name} took longer than {timeout:g}s")
+                if _flooded(out, err):
+                    raise ToolOutputLimit(f"{name} wrote more output than allowed")
+        except BaseException:
+            # also a stop signal turned into SystemExit: the program must not outlive the run
+            if process.returncode is None:  # a reaped program's id may belong to another process
                 _stop(process)
-                raise ToolTimeout(f"{name} took longer than {timeout:g}s")
-            if _flooded(out, err):
-                _stop(process)
-                raise ToolOutputLimit(f"{name} wrote more output than allowed")
+            raise
         if _flooded(out, err):
             raise ToolOutputLimit(f"{name} wrote more output than allowed")
         return Result(code=code, stdout=_read(out), stderr=_read(err))
