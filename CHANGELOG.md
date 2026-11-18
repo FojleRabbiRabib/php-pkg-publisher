@@ -267,6 +267,8 @@ All notable changes to this project are documented here. The format follows
   load the publish modules.
 - Release tags may not have leading zeros in a number (`v01.0.0` is ignored), so two tags cannot
   map to one package version.
+- CI caches the pip downloads of the development tools; every file is still checked against its
+  pinned hash.
 
 ### Fixed
 
