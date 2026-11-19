@@ -111,6 +111,17 @@ and others (mode `0600`).
   and no one else. The same value is the secret of the GitHub webhook. Without it every delivery
   fails with a server error.
 
+Every server error the receiver decides on, or catches, writes one line to PHP's error log (where
+its `error_log` setting points): the prefix `pkg-hook:` and a reason, which is
+`nudge-directory-missing`, `secret-unusable`, `guid-directory-unusable`, `nudge-failed`, or
+`internal-error` followed by the exception class. A line never holds a path, a secret or an
+exception message. A fatal error PHP cannot catch (the memory or time limit) is a bare 500 that PHP
+logs itself, with its own text and a path.
+
+The receiver also turns `display_errors` off and `log_errors` on for itself, so no PHP error text
+reaches GitHub. A pool that locks `display_errors` on with an admin setting overrides this: do not
+lock it on.
+
 ## Day-to-day commands
 
 Run them as root, switching to the publisher user (which has no login shell) the way the unit

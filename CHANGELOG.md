@@ -331,6 +331,9 @@ All notable changes to this project are documented here. The format follows
   lost files, and the store directories that get a new link are now flushed too.
 - Temporary files that a crashed write left in `generations/` and in the site root were never
   removed; the sweep at the start of every run now removes them.
+- A delivery that arrived in the instant the publisher took the nudge file got a 500, a failed
+  delivery in GitHub's webhook log, although nothing was lost. The receiver now makes a new nudge
+  (one retry; a second failure is still a 500); the publisher skips a pass that finds no change.
 
 ### Security
 
@@ -339,3 +342,8 @@ All notable changes to this project are documented here. The format follows
   paths now. Only text built through that helper and the alert text is covered, and only the
   patterns they already had: a fingerprint written with spaces and a path with a space or a colon
   are not.
+- The webhook receiver no longer lets PHP error text reach the client on a host that shows errors:
+  it turns `display_errors` off and `log_errors` on, and anything the handler throws becomes a bare
+  500. Each 500 the receiver decides on or catches writes one `pkg-hook: <reason>` line to the
+  error log with a fixed reason code and never a path, a secret or an exception message. A fatal
+  error PHP cannot catch (the memory or time limit) is logged by PHP itself.

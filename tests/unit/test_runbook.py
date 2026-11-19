@@ -149,6 +149,21 @@ def test_the_stored_file_section_quotes_what_the_code_says() -> None:
     assert "one of the last three generations" in TEXT
 
 
+def test_the_receiver_reasons_the_runbook_lists_are_the_codes() -> None:
+    source = (ROOT / "web" / "hooks" / "sync.php").read_text(encoding="utf-8")
+    reasons = re.findall(r"fail\('([a-z-]+)'\)", source)
+    assert sorted(reasons) == [
+        "guid-directory-unusable",
+        "nudge-directory-missing",
+        "nudge-failed",
+        "secret-unusable",
+    ]
+    for reason in (*reasons, "internal-error"):
+        assert f"`{reason}`" in TEXT
+    assert "pkg-hook: " in source
+    assert "`pkg-hook:`" in TEXT
+
+
 def test_the_numbers_quoted_are_the_codes() -> None:
     assert (watch.TOKEN_WARNING_DAYS, watch.CERTIFICATE_WARNING_DAYS) == (30, 21)
     assert (watch.DATE_MAX_AGE_DAYS, watch.VALID_UNTIL_WARNING_DAYS) == (3, 7)
