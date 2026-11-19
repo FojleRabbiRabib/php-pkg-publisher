@@ -7,9 +7,12 @@ publishing still happens when admitting stopped) is tested without the network o
 `LiveStages` is the real thing and is only assembled by `open_live`.
 
 Exit contract, used by the service unit's `OnFailure=`: a run fails (exit 1) when the admit stage
-stopped, when publishing failed, or when anything raised. A tag that failed admission, a
-quarantine, a pin dropped by an exclusion and a clean-up failure after the flip are reported as
-alerts and do not fail the run, because the repository is still correct and still served.
+stopped, when publishing failed, when the configuration was refused, when the alerts could not be
+written, or when anything raised. A refused configuration and an unusable alert file end the pass
+without raising, so the nudge is not put back. A tag that failed admission, a quarantine, a pin
+dropped by an exclusion, a clean-up failure after the flip, an exclusion that matches no tag and a
+newest tag that lacks a declared cell are reported as alerts and do not fail the run, because the
+repository is still correct and still served.
 """
 
 from __future__ import annotations
@@ -38,10 +41,12 @@ STAGE_ALERTS: Final[Mapping[str, tuple[str, bool]]] = {
     "product-error": ("product-error", False),
     "changed": ("changed", False),
     "vanished": ("vanished", False),
+    "exclusion-unmatched": ("exclusion-unmatched", True),
+    "cell-missing": ("cell-missing", True),
 }
 SETUP_FAULTS: Final = (ToolError, feed.FeedError, verify.VerifyError, OSError)
 SUBKEY_WARNING_DAYS: Final = 30
-REPEATING: Final = frozenset({"changed", "vanished"})
+REPEATING: Final = frozenset({"changed", "vanished", "exclusion-unmatched", "cell-missing"})
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -253,6 +258,18 @@ def _held(settings: Settings) -> Iterator[RunLock]:
 
 def _load(settings: Settings) -> tuple[config.ProductList, config.ExclusionList]:
     products = config.load_products(settings.products)
+    if not products.products:
+        try:
+            recorded = admit.recorded_products(settings.state)
+        except OSError as error:
+            raise config.ConfigError(
+                f"{settings.state}: cannot list the products with state: {error.strerror or error}"
+            ) from error
+        if recorded:
+            # a truncated file would otherwise publish an empty signed repository
+            raise config.ConfigError(
+                f"{settings.products}: lists no product, but earlier products have state"
+            )
     return products, config.load_exclusions(settings.exclude, products)
 
 
@@ -271,7 +288,17 @@ def run_once(
     with _held(settings) as lock:
 
         def one_pass() -> Result:
-            products, exclusions = _load(settings)
+            try:
+                products, exclusions = _load(settings)
+            except config.ConfigError as error:
+                # Raising would put the nudge back and the path unit would start the service
+                # again until its start limit; the daily timer retries once the file is fixed.
+                text = clean(f"configuration refused: {error}")
+                refused = Result(
+                    alerts=(Alert(kind="config-refused", text=text, urgent=True),), failure=text
+                )
+                emit(refused)
+                return refused
             stages = LiveStages(
                 settings,
                 products,

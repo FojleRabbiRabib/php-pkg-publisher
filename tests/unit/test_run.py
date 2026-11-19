@@ -10,7 +10,7 @@ from typing import ClassVar
 
 import pytest
 
-from publisher import admit, feed, generation, run, verify
+from publisher import admit, config, feed, generation, run, verify
 from publisher import alert as alert_module
 from publisher import lock as locking
 from publisher.__main__ import main
@@ -131,12 +131,20 @@ def test_admitted_events_do_not_alert() -> None:
     assert _kinds(result) == ["published"]
 
 
-@pytest.mark.parametrize("kind", ["changed", "vanished"])
+@pytest.mark.parametrize("kind", ["changed", "vanished", "exclusion-unmatched", "cell-missing"])
 def test_repeating_events_carry_a_dedupe_key(kind: str) -> None:
     event = admit.Event(product="usearch-php", tag="v1.0.0", kind=kind, detail="x")  # type: ignore[arg-type]
     result, _ = _run(FakeStages(report=admit.Report(events=(event,), stopped=None)))
     alert = next(a for a in result.alerts if a.kind == kind)
     assert alert.key == f"{kind}:usearch-php v1.0.0"
+
+
+@pytest.mark.parametrize("kind", ["exclusion-unmatched", "cell-missing"])
+def test_a_declaration_that_does_nothing_is_urgent_and_does_not_fail_the_run(kind: str) -> None:
+    event = admit.Event(product="usearch-php", tag="v1.0.0", kind=kind, detail="x")  # type: ignore[arg-type]
+    result, _ = _run(FakeStages(report=admit.Report(events=(event,), stopped=None)))
+    assert next(a for a in result.alerts if a.kind == kind).urgent
+    assert result.failure is None
 
 
 def test_a_dropped_pin_and_a_cleanup_failure_alert_without_failing() -> None:
@@ -280,6 +288,104 @@ def test_a_raising_pass_puts_the_nudge_back(
     with pytest.raises(verify.VerifyError):
         run.run_once(settings, emit=lambda _: None, now=5.0, log=lambda _: None)
     assert settings.nudge.exists()
+
+
+def _empty_products(settings: Settings) -> None:
+    settings.products.write_text("products: []\n", encoding="utf-8")
+
+
+def _earlier_state(settings: Settings, name: str = "usearch-php.json") -> None:
+    directory = settings.state / admit.PRODUCTS_DIRECTORY
+    directory.mkdir(mode=0o700, exist_ok=True)
+    (directory / name).write_text("{}", encoding="utf-8")
+
+
+def test_an_empty_product_list_is_refused_when_earlier_products_have_state(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    _empty_products(settings)
+    _earlier_state(settings)
+    with pytest.raises(config.ConfigError, match="lists no product, but earlier products have"):
+        run._load(settings)
+
+
+def test_an_unreadable_state_directory_is_a_refused_configuration_only_for_an_empty_list(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    (settings.state / admit.PRODUCTS_DIRECTORY).write_text("not a directory", encoding="utf-8")
+    products, _ = run._load(settings)  # the list names a product: the directory is not looked at
+    assert len(products.products) == 1
+    _empty_products(settings)
+    with pytest.raises(config.ConfigError, match="cannot list the products with state"):
+        run._load(settings)
+
+
+def test_an_empty_product_list_loads_when_nothing_was_ever_admitted(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    _empty_products(settings)
+    _earlier_state(settings, ".state-x1y2z3")  # a half-written file of a crashed run
+    products, _ = run._load(settings)
+    assert products.products == ()
+
+
+def test_a_listed_product_loads_whatever_state_there_is(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    _earlier_state(settings, "other-php.json")
+    products, _ = run._load(settings)
+    assert [p.repo for p in products.products] == ["usearch-php"]
+
+
+def test_a_refused_configuration_alerts_and_does_not_put_the_nudge_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    _empty_products(settings)
+    _earlier_state(settings)
+
+    def never(*args: object, **kwargs: object) -> FakeStages:
+        raise AssertionError("no stage may start on a configuration that was refused")
+
+    monkeypatch.setattr(run, "LiveStages", never)
+    settings.nudge.write_bytes(b"")
+    seen: list[run.Result] = []
+    results = run.run_once(settings, emit=seen.append, now=5.0, log=lambda _: None)
+    assert seen == results
+    (result,) = results
+    assert result.failure is not None
+    assert "lists no product" in result.failure
+    assert str(tmp_path) not in result.failure
+    (item,) = result.alerts
+    assert (item.kind, item.urgent) == ("config-refused", True)
+    assert not settings.nudge.exists()  # a restored nudge would start the service again
+
+
+def test_a_malformed_exclude_file_is_refused_the_same_way(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    settings.exclude.write_text("exclude: [oops]\n", encoding="utf-8")
+    _patch_live(monkeypatch, FakeStages())
+    settings.nudge.write_bytes(b"")
+    (result,) = run.run_once(settings, emit=lambda _: None, now=5.0, log=lambda _: None)
+    assert result.failure is not None
+    assert "configuration refused" in result.failure
+    assert not settings.nudge.exists()
+
+
+def test_main_exits_one_and_names_the_refused_file_without_its_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = _settings(tmp_path)
+    _write_credentials(settings)
+    _fake_telegram(monkeypatch)
+    _empty_products(settings)
+    _earlier_state(settings)
+    assert main(["--config", str(tmp_path / "publisher.yml"), "run"]) == 1
+    assert "configuration refused" in capsys.readouterr().err
+    assert len(_FakeTelegram.sent) == 1
+    assert str(tmp_path) not in _FakeTelegram.sent[0]
 
 
 @pytest.mark.parametrize("broken", ["trusted_root", "admit"])

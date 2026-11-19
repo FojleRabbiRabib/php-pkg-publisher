@@ -269,6 +269,10 @@ All notable changes to this project are documented here. The format follows
   another letter case, the duplicate window, and the JSON depth cap, on both sides of 16 levels).
 - A time limit for every test (`pytest-timeout`: 120 seconds, 20 minutes for a container test), so a
   test that hangs fails with its stack instead of stalling the run.
+- Two urgent alerts, each repeated once a day: an `exclude.yml` or `exclude:` entry whose tag is
+  neither listed by GitHub nor admitted (a typo yanked nothing, silently), and a product whose
+  newest admitted tag has no package for a declared PHP version or architecture (a widened
+  declaration is not applied to tags admitted before).
 
 ### Changed
 
@@ -279,9 +283,14 @@ All notable changes to this project are documented here. The format follows
   map to one package version.
 - CI caches the pip downloads of the development tools; every file is still checked against its
   pinned hash.
+- A `products.yml` that lists no product is refused while state of earlier products exists, so a
+  truncated file cannot publish an empty signed repository.
 
 ### Fixed
 
+- A refused configuration (a malformed `products.yml` or `exclude.yml`, or the empty list above)
+  made the run raise, so its nudge was put back and the path unit started the service again until
+  the start limit. It is now one urgent alert and exit 1, and the nudge stays consumed.
 - The install guide and the security notes named `NO_PUBKEY` and `Signing key not found` for every
   client. Measured: apt on Debian 13 says `Missing key`, and dnf on Enterprise Linux 8 and 9 says
   `Bad GPG signature`; the guide now quotes each, and a test checks it.

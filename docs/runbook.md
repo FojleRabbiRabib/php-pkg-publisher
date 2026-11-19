@@ -84,6 +84,17 @@ watch: {host: pkg.example.org, origin: <origin-public-ip>}
 exclude: []
 ```
 
+A run refuses a file that is malformed, and a `products.yml` that lists no product while the
+publisher holds state of earlier products (a truncated file would otherwise publish an empty
+repository). It sends one urgent `config-refused` alert, ends with exit 1 and publishes nothing;
+the nudge is not put back, so the daily timer is the next try. The served repository stays valid
+until its `Valid-Until`, so fix the file within days. To remove every product on purpose, remove
+their state files (the `products` directory inside the `state` path of `publisher.yml`) as well.
+
+When a declaration is widened (a new PHP version or architecture), tags admitted before are not
+checked again. While the newest admitted tag has no package for a declared cell the run sends an
+urgent `cell-missing` alert once a day; it ends with the first release that carries the cell.
+
 ## Secrets
 
 Each file is read only if it is a regular file owned by the publisher user and closed to group
@@ -136,6 +147,10 @@ exclude:
 
 The next run builds the repository without that tag, even if it was admitted before. The product
 must be listed in `products.yml`. Remove the entry to bring it back.
+
+An entry whose tag GitHub does not list for the product and the publisher never admitted (usually
+a typo) yanks nothing: the run sends an urgent `exclusion-unmatched` alert once a day until the
+entry is corrected or removed.
 
 ## Installing cosign
 
