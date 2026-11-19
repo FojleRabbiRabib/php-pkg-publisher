@@ -39,8 +39,6 @@ BOT_TOKEN: Final = re.compile(r"[0-9]{3,20}:[A-Za-z0-9_-]{20,100}")
 MAX_SEEN: Final = 1000
 MAX_MESSAGES: Final = 5
 PAUSE_SECONDS: Final = 1.1  # the service allows about one message a second per chat
-KEY_ID: Final = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{40}(?![0-9A-Fa-f])")
-HOST_PATH: Final = re.compile(r"(?<![\w/.])/[^\s'\":,;)(\]\[]+")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -53,7 +51,7 @@ class Alert:
 
 def clean(text: str) -> str:
     """Release or tool text as short ASCII without host paths or key fingerprints."""
-    return ascii(KEY_ID.sub("<id>", HOST_PATH.sub("<path>", text)))[:MAX_TEXT]
+    return ascii(net.redact(text))[:MAX_TEXT]
 
 
 class AlertError(Exception):

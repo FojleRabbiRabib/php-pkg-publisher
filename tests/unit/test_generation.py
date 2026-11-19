@@ -537,6 +537,17 @@ def test_a_manifest_with_a_repeated_key_is_refused(site: Site, world: World) -> 
         generation.read_manifest(site, identifier)
 
 
+def test_a_manifest_nested_deeper_than_the_parser_allows_is_refused(
+    site: Site, world: World
+) -> None:
+    identifier = _install(site, world.tree_a, world.entries_a, time.time())
+    deep = b"[" * 30000 + b"]" * 30000
+    assert len(deep) < generation.MAX_MANIFEST_BYTES
+    (site.manifests / f"{identifier}.json").write_bytes(deep)
+    with pytest.raises(GenerationError, match="not valid"):
+        generation.read_manifest(site, identifier)
+
+
 def test_a_manifest_entry_with_a_wrong_type_is_refused(site: Site, world: World) -> None:
     identifier = _install(site, world.tree_a, world.entries_a, time.time())
     path = site.manifests / f"{identifier}.json"

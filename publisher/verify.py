@@ -247,7 +247,7 @@ def read_trusted_root(path: Path) -> bytes:
         with path.open("rb") as handle:
             raw = handle.read(MAX_SMALL_FILE_BYTES + 1)
         document = json.loads(raw)
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, RecursionError) as error:
         raise ToolError(f"{path}: trusted root cannot be read") from error
     media_type = document.get("mediaType") if isinstance(document, dict) else None
     if len(raw) > MAX_SMALL_FILE_BYTES or not (

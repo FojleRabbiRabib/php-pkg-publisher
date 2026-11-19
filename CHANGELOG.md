@@ -285,6 +285,9 @@ All notable changes to this project are documented here. The format follows
   pinned hash.
 - A `products.yml` that lists no product is refused while state of earlier products exists, so a
   truncated file cannot publish an empty signed repository.
+- A listing fails as a whole when a release's own API URL does not name the product's repository,
+  whichever form the page links take (`/repos/<owner>/<repo>` or `/repositories/<id>`). A release
+  without that URL fails it too.
 
 ### Fixed
 
@@ -313,3 +316,15 @@ All notable changes to this project are documented here. The format follows
   which said a failed run puts its nudge back, now says which runs do. A program that a tool call
   had started is now stopped when the run is stopped, not only on a timeout or a flood of output.
 - The hourly watch ended green when its alerts could not be delivered; it now exits 1.
+- A Sigstore trusted-root file, or a generation manifest, nested deeper than the JSON parser allows
+  ended the run with an unhandled error. A refreshed trusted root like that now falls back to the
+  stored copy, a stored one stops the run with the usual message, and a manifest like that is
+  refused as not valid.
+
+### Security
+
+- Key fingerprints are now replaced before error text is cut to its length, so one that straddled
+  the cut is no longer left half visible in the journal. The shared text helper also replaces host
+  paths now. Only text built through that helper and the alert text is covered, and only the
+  patterns they already had: a fingerprint written with spaces and a path with a space or a colon
+  are not.

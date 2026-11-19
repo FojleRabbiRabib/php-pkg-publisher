@@ -248,7 +248,7 @@ def _load_json(path: Path, keys: frozenset[str]) -> dict[str, Any]:
         document = json.loads(raw.decode("utf-8"), object_pairs_hook=net.no_duplicate_keys)
     except OSError as error:
         raise _fail(f"{path.name}: cannot read", error) from error
-    except (ValueError, net.DuplicateKey) as error:
+    except (ValueError, RecursionError) as error:  # DuplicateKey is a ValueError
         raise GenerationError(f"{path.name}: is not valid: {error}") from error
     if not isinstance(document, dict) or set(document) != keys:
         raise GenerationError(f"{path.name}: does not have exactly the expected keys")

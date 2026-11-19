@@ -39,6 +39,7 @@ LIVE_LINK = (
 FIRST_URL = "https://api.github.com/repos/FojleRabbiRabib/p-php/releases?per_page=30"
 NEXT_URL = "https://api.github.com/repositories/1/releases?per_page=30&page=2"
 DIGEST = "sha256:" + "a" * 64
+RELEASE_URL = "https://api.github.com/repos/FojleRabbiRabib/p-php/releases/1"
 
 
 class Fake:
@@ -67,6 +68,7 @@ def _asset(name: str = "a.deb", tag: str = "v1.0.0", **override: Any) -> dict[st
 
 def _release(tag: str = "v1.0.0", **override: Any) -> dict[str, Any]:
     release: dict[str, Any] = {
+        "url": RELEASE_URL,
         "tag_name": tag,
         "draft": False,
         "prerelease": False,
@@ -247,6 +249,46 @@ def test_later_pages_must_stay_on_one_repository() -> None:
     first = _page([], link='<https://api.github.com/repositories/1/releases?page=2>; rel="next"')
     second = _page([], link='<https://api.github.com/repositories/2/releases?page=3>; rel="next"')
     assert "page links change repository" in str(_error(first, second, _page([])))
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://api.github.com/repos/FojleRabbiRabib/other-php/releases/1",
+        "https://api.github.com/repos/someone/p-php/releases/1",
+        "https://api.github.com/repos/FojleRabbiRabib/p-php-x/releases/1",
+        "https://api.github.com/repos/FojleRabbiRabib/p-php/releases/1/assets",
+        "https://api.github.com/repos/FojleRabbiRabib/p-php/releases/latest",
+        "https://api.github.com/repos/FojleRabbiRabib/p-php/releases/",
+        "http://api.github.com/repos/FojleRabbiRabib/p-php/releases/1",
+        "https://example.test/repos/FojleRabbiRabib/p-php/releases/1",
+    ],
+)
+def test_a_release_of_another_repository_fails_the_whole_listing(url: str) -> None:
+    page = _page([_release("v1.0.0"), _release("v1.1.0", url=url)])
+    assert "belongs to another repository" in str(_error(page))
+
+
+def test_a_release_of_another_repository_on_a_later_page_fails_the_listing() -> None:
+    other = "https://api.github.com/repos/FojleRabbiRabib/other-php/releases/1"
+    first = _page([_release("v1.0.0")], link=f'<{NEXT_URL}>; rel="next"')
+    second = _page([_release("v1.1.0", url=other)])
+    assert "belongs to another repository" in str(_error(first, second))
+
+
+def test_a_release_whose_url_is_missing_or_not_text_fails_the_listing() -> None:
+    assert "lacks 'url'" in str(
+        _error(_page([{k: v for k, v in _release().items() if k != "url"}]))
+    )
+    assert "'url' has the wrong type" in str(_error(_page([_release(url=5)])))
+
+
+def test_a_later_page_reached_by_the_repository_link_form_is_listed() -> None:
+    first = _page([_release("v1.0.0")], link=f'<{NEXT_URL}>; rel="next"')
+    second = _page(
+        [_release("v1.1.0", url="https://api.github.com/repos/FojleRabbiRabib/p-php/releases/2")]
+    )
+    assert [release.tag for release in _listing(first, second).releases] == ["v1.0.0", "v1.1.0"]
 
 
 def test_listing_enforces_a_total_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
