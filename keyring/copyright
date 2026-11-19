@@ -1,5 +1,5 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: php-pkg-publisher
+Upstream-Name: PHP Package Publisher
 Source: https://github.com/FojleRabbiRabib/php-pkg-publisher
 Comment: SPDX-License-Identifier: Apache-2.0
 

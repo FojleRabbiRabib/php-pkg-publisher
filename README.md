@@ -1,4 +1,4 @@
-# php-pkg-publisher
+# PHP Package Publisher
 
 The platform for one signed APT and RPM repository for PHP extensions.
 
