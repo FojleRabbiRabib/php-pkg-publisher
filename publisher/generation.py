@@ -19,7 +19,11 @@ carries them forward by hard link from the store: a hash-named file stays while 
 three generations lists it or it is less than seven days old. What each generation lists is read
 from that generation's own `Release` and `repomd.xml`, not from a separate list. Before the flip
 the new tree must resolve every path named by the last three generations. The flip is a
-temporary symlink renamed over `current`, never `ln -sfn`. The caller holds the run lock.
+temporary symlink renamed over `current`, never `ln -sfn`. A stored file that is missing or holds
+the wrong bytes is restored from an older tree that still has it, or replaced by the copy the new
+build just made; a file no tree can supply is left out and reported, because refusing would stop
+the re-signing and help nobody. The caller holds the run lock, which is why the sweep can remove
+every temporary file of an earlier, crashed run.
 """
 
 from __future__ import annotations
@@ -40,7 +44,7 @@ from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from publisher import config, files, metadata, net, signer
 from publisher.admit import AdmittedPackage
@@ -117,6 +121,8 @@ class Published:
     pin_dropped: bool = False
     retire_error: str | None = None
     subkey_expires: float | None = None
+    repaired: tuple[str, ...] = ()
+    lost: tuple[str, ...] = ()
 
 
 def _fail(message: str, error: OSError) -> GenerationError:
@@ -408,18 +414,65 @@ def _make_dirs(path: Path, stop: Path, mode: int) -> None:
         directory.chmod(mode)
 
 
-def _link(source: Path, destination: Path, stop: Path, mode: int) -> bool:
-    """Hard-link `source` at `destination`; True when it is new, False when the same bytes exist."""
+def _link(
+    source: Path, destination: Path, stop: Path, mode: int, *, replace: bool = False
+) -> Literal["new", "same", "replaced"]:
+    """Hard-link `source` at `destination` and say whether that was new, already the same bytes,
+    or (only with `replace`, for a source the caller has checked) a swap of other content."""
     _make_dirs(destination.parent, stop, mode)
     try:
         os.link(source, destination)
     except FileExistsError:
-        if _file_digest(source, "SHA256") != _file_digest(destination, "SHA256"):
+        if _file_digest(source, "SHA256") == _file_digest(destination, "SHA256"):
+            return "same"
+        if not replace:
             raise GenerationError(f"{destination.name}: exists with other content") from None
-        return False
+        try:
+            destination.unlink()
+            os.link(source, destination)
+        except OSError as error:
+            raise _fail(f"cannot replace {destination.name}", error) from error
+        return "replaced"
     except OSError as error:
         raise _fail(f"cannot link {destination.name}", error) from error
-    return True
+    return "new"
+
+
+def _recover(site: Site, new: Path, previous: Sequence[str], relative: str) -> bool:
+    """Restore a hash-named file from the newest older tree that still holds its right bytes.
+
+    The store entry (missing, or holding other content) and the new tree both get the file. False
+    when no older tree has a regular file whose content matches its name.
+    """
+    promised = _expected_digest(relative)
+    if promised is None:
+        return False
+    for identifier in reversed(previous):
+        source = site.versions / identifier / relative
+        if source.is_symlink() or not source.is_file():
+            continue
+        if _file_digest(source, promised[0]) != promised[1]:
+            continue
+        _link(source, site.store / relative, site.store, 0o700, replace=True)
+        _link(source, new / relative, new, 0o755)
+        return True
+    return False
+
+
+def _sync_store(site: Site, relatives: Collection[str]) -> None:
+    """Flush the store directories that got a link: a hard link is durable only once its
+    directory is, and the file data is already flushed through the new tree."""
+    directories = {site.store}
+    for relative in relatives:
+        parent = (site.store / relative).parent
+        while parent != site.store:
+            directories.add(parent)
+            parent = parent.parent
+    try:
+        for directory in sorted(directories, key=lambda p: -len(p.parts)):
+            files.sync_directory(directory)
+    except OSError as error:
+        raise _fail("cannot flush the store", error) from error
 
 
 def _remove_tree(path: Path) -> None:
@@ -458,6 +511,12 @@ def _sweep(site: Site) -> None:
                 _remove_tree(path)
             else:
                 path.unlink()
+        # Every command that changes the site holds the run lock, so no writer owns a temporary
+        # file of `write_atomic` here whatever its age; only regular files are touched.
+        for directory in (site.manifests, site.root):
+            for path in directory.glob(f"{files.TEMPORARY_PREFIX}*"):
+                if stat.S_ISREG(path.lstat().st_mode):
+                    path.unlink()
         for identifier in generations(site):
             if _sequence(identifier) > newest:
                 _remove_tree(site.versions / identifier)
@@ -487,6 +546,16 @@ class _Plan:
     drop: set[str]
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Assembled:
+    """A new tree, the store files that may go once it is live, and the store files restored."""
+
+    tree: Path
+    drop: set[str]
+    repaired: tuple[str, ...]
+    lost: tuple[str, ...]
+
+
 def _plan_store(site: Site, live: set[str], now: float) -> _Plan:
     carry: set[str] = set()
     drop: set[str] = set()
@@ -510,10 +579,15 @@ def _plan_store(site: Site, live: set[str], now: float) -> _Plan:
 
 def _assemble(
     site: Site, tree: Path, identifier: str, now: float, previous: Sequence[str]
-) -> tuple[Path, set[str]]:
+) -> _Assembled:
     """Build `versions/<id>.new` from a signed tree plus the hash-named files to carry forward.
 
-    Returns the new tree and the store files that may be removed once the flip has happened.
+    A carried file that is missing from the store, or holds other content, is restored from the
+    newest older tree that still has its right bytes, and a store file that differs from a file
+    this build just made (and checked against its name) is replaced by it; both are reported in
+    `repaired`. A file that an older index lists and no tree can supply is left out and reported in
+    `lost`: clients of that index cannot fetch it from the served tree either, and refusing would
+    only stop the re-signing.
     """
     new = site.versions / f"{identifier}{NEW_SUFFIX}"
     new.mkdir(mode=0o755)
@@ -525,25 +599,48 @@ def _assemble(
     (tree / "dists").rename(new / "apt" / "dists")
     (tree / "rpm").rename(new / "rpm")
     _check_tree(new)
+    linked: list[str] = []
+    repaired: set[str] = set()
     for relative, path in _hashed_files(new).items():
         stored = site.store / relative
-        if _link(path, stored, site.store, 0o700):
+        outcome = _link(path, stored, site.store, 0o700, replace=True)
+        if outcome != "same":
             os.utime(stored, (now, now))  # the age of a stored file counts from its first storage
+            linked.append(relative)
+        if outcome == "replaced":
+            repaired.add(relative)
     older = {i: _live_paths(site.versions / i) for i in previous[-(LIVE_GENERATIONS - 1) :]}
-    plan = _plan_store(site, _live_paths(new).union(*older.values()), now)
+    live = _live_paths(new).union(*older.values())
+    plan = _plan_store(site, live, now)
+    drop = set(plan.drop)
     for relative in sorted(plan.carry):
         target = new / relative
         if target.exists():
             continue
         promised = _expected_digest(relative)
         if promised is None or _file_digest(site.store / relative, promised[0]) != promised[1]:
-            raise GenerationError(f"{relative}: the stored file does not match its name")
+            if _recover(site, new, previous, relative):
+                linked.append(relative)
+                repaired.add(relative)
+            else:
+                drop.add(relative)  # the damaged copy serves nobody; a live path is lost below
+            continue
         _link(site.store / relative, target, new, 0o755)
+    lost: set[str] = set()
     for live_before in older.values():
-        for relative in live_before:
-            if not (new / relative).is_file():
-                raise GenerationError(f"{relative}: would disappear for clients of an older index")
-    return new, plan.drop
+        for relative in sorted(live_before):
+            if (new / relative).is_file():
+                continue
+            if _recover(site, new, previous, relative):
+                linked.append(relative)
+                repaired.add(relative)
+            else:
+                lost.add(relative)  # no tree has it: clients of that index already cannot fetch it
+    if linked:
+        _sync_store(site, linked)
+    return _Assembled(
+        tree=new, drop=drop, repaired=tuple(sorted(repaired)), lost=tuple(sorted(lost))
+    )
 
 
 def _flip(site: Site, identifier: str) -> None:
@@ -632,6 +729,8 @@ class Installed:
     generation: str
     retire_error: str | None
     subkey_expires: float | None = None
+    repaired: tuple[str, ...] = ()
+    lost: tuple[str, ...] = ()
 
 
 def install(
@@ -642,7 +741,9 @@ def install(
         _sweep(site)
     identifier = _next_identifier(site, now)
     previous = [i for i in generations(site) if i != identifier]
-    new, drop = _assemble(site, tree, identifier, now, previous)
+    assembled = _assemble(site, tree, identifier, now, previous)
+    new, drop = assembled.tree, assembled.drop
+    repaired, lost = assembled.repaired, assembled.lost
     try:
         _sync_tree(new)
         files.write_atomic(
@@ -656,8 +757,10 @@ def install(
     try:
         _retire(site, identifier, drop)
     except GenerationError as error:
-        return Installed(generation=identifier, retire_error=str(error))
-    return Installed(generation=identifier, retire_error=None)
+        return Installed(
+            generation=identifier, retire_error=str(error), repaired=repaired, lost=lost
+        )
+    return Installed(generation=identifier, retire_error=None, repaired=repaired, lost=lost)
 
 
 def _same_content(left: Sequence[Entry], right: Sequence[Entry]) -> bool:
@@ -737,6 +840,8 @@ def publish(
         pin_dropped=dropped,
         retire_error=done.retire_error,
         subkey_expires=done.subkey_expires,
+        repaired=done.repaired,
+        lost=done.lost,
     )
 
 
@@ -777,4 +882,6 @@ def rollback(
         pinned=True,
         retire_error=done.retire_error,
         subkey_expires=done.subkey_expires,
+        repaired=done.repaired,
+        lost=done.lost,
     )

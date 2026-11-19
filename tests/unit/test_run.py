@@ -162,6 +162,46 @@ def test_a_dropped_pin_and_a_cleanup_failure_alert_without_failing() -> None:
     assert result.failure is None
 
 
+def test_a_restored_store_alerts_without_failing_and_is_logged() -> None:
+    stages = FakeStages(
+        published=generation.Published(
+            generation="00000002-20260101T000000Z",
+            skipped=False,
+            pinned=False,
+            repaired=("rpm/8.3/x86_64/repodata/a", "rpm/8.3/x86_64/repodata/b"),
+        )
+    )
+    result, logged = _run(stages)
+    assert _kinds(result) == ["published", "store-repaired"]
+    alert = next(a for a in result.alerts if a.kind == "store-repaired")
+    assert not alert.urgent
+    assert alert.key is None
+    assert "2 stored files" in alert.text
+    assert "/" not in alert.text
+    assert any("store repaired: 2" in line for line in logged)
+    assert result.failure is None
+
+
+def test_lost_store_files_alert_urgently_once_a_day_without_failing() -> None:
+    stages = FakeStages(
+        published=generation.Published(
+            generation="00000002-20260101T000000Z",
+            skipped=False,
+            pinned=False,
+            lost=("rpm/8.3/x86_64/repodata/a", "rpm/8.3/x86_64/repodata/b"),
+        )
+    )
+    result, logged = _run(stages)
+    assert _kinds(result) == ["published", "store-lost"]
+    alert = next(a for a in result.alerts if a.kind == "store-lost")
+    assert alert.urgent
+    assert alert.key == "store-lost"
+    assert "2 files" in alert.text
+    assert "/" not in alert.text
+    assert any("store lost: 2" in line for line in logged)
+    assert result.failure is None
+
+
 def test_alert_text_is_ascii_and_capped() -> None:
     event = admit.Event(
         product="usearch-php", tag="v1.0.0", kind="failed", detail="‮\n" + "x" * 1000
@@ -600,7 +640,31 @@ def test_main_rollback_reports_the_new_generation(
     code = main(["--config", str(tmp_path / "publisher.yml"), "rollback", "00000001-y"])
     assert code == 0
     assert seen == ["00000001-y"]
-    assert "00000009-x" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "00000009-x" in output
+    assert "store repaired" not in output
+
+
+def test_main_rollback_says_when_it_restored_stored_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _settings(tmp_path)
+
+    def fake(settings: Settings, identifier: str, **kwargs: object) -> generation.Published:
+        return generation.Published(
+            generation="00000009-x",
+            skipped=False,
+            pinned=True,
+            repaired=("a", "b", "c"),
+            lost=("d", "e"),
+        )
+
+    monkeypatch.setattr(run, "rollback", fake)
+    code = main(["--config", str(tmp_path / "publisher.yml"), "rollback", "00000001-y"])
+    assert code == 0
+    output = capsys.readouterr().out
+    assert "store repaired: 3 hash-named files restored" in output
+    assert "store lost: 2 hash-named files have no copy" in output
 
 
 def _quarantine(settings: Settings) -> None:

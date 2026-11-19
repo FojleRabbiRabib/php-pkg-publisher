@@ -132,6 +132,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.command == "rollback":
             done = run.rollback(settings, arguments.generation)
             print(f"rolled back: new generation {done.generation}, pinned until clear-pin")
+            if done.repaired:
+                print(f"store repaired: {len(done.repaired)} hash-named files restored")
+            if done.lost:
+                print(f"store lost: {len(done.lost)} hash-named files have no copy")
             return 0
         if arguments.command == "requeue":
             run.requeue(settings, arguments.repo, arguments.tag)

@@ -136,6 +136,22 @@ A tag that fails is retried. Once it has failed at least 5 times and the first f
 3 days old it is quarantined and alerts. Fix the cause (an unsigned asset, a missing bundle) and
 `requeue` it.
 
+## A stored file is missing
+
+The publisher keeps in `<site-root>/store/` every hash-named file that a client holding the index of
+one of the last three generations may still ask for. When such a file is missing or damaged, a run
+restores it from the newest kept tree under `<site-root>/versions/` that still has its right bytes,
+or replaces it with the copy of the build it is making, and sends a `store-repaired` alert (not
+urgent). Nothing needs doing except finding out what removed or damaged the file, such as a power
+cut or a clean-up that went too far.
+
+When no kept tree has the file either, the file is gone: clients that hold the index of an older
+generation cannot fetch it from the served tree, and refusing to publish would help none of them
+and would stop the re-signing. The run goes on without that file and sends an urgent
+`store-lost` alert, repeated once a day while that older index is still one of the last three
+generations. The alert counts the files and names none. The clients concerned fetch the new index
+and carry on, so there is nothing to restore; find out what removed the file.
+
 ## Yanking a release
 
 Add an entry for the product and tag to `exclude.yml`, then start a `run` (see above):

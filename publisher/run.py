@@ -10,9 +10,10 @@ Exit contract, used by the service unit's `OnFailure=`: a run fails (exit 1) whe
 stopped, when publishing failed, when the configuration was refused, when the alerts could not be
 written, or when anything raised. A refused configuration and an unusable alert file end the pass
 without raising, so the nudge is not put back. A tag that failed admission, a quarantine, a pin
-dropped by an exclusion, a clean-up failure after the flip, an exclusion that matches no tag and a
-newest tag that lacks a declared cell are reported as alerts and do not fail the run, because the
-repository is still correct and still served.
+dropped by an exclusion, a clean-up failure after the flip, an exclusion that matches no tag, a
+newest tag that lacks a declared cell, stored files that were restored and stored files that no
+tree could supply are reported as alerts and do not fail the run, because the repository is still
+correct and still served.
 """
 
 from __future__ import annotations
@@ -174,6 +175,29 @@ def run_pass(
     if published.retire_error is not None:
         alerts.append(
             Alert(kind="cleanup-failed", text=clean(f"clean-up failed: {published.retire_error}"))
+        )
+    if published.lost:
+        count = len(published.lost)
+        log(f"store lost: {count} hash-named files that older indexes list have no copy")
+        alerts.append(
+            Alert(
+                kind="store-lost",
+                text=(
+                    f"{count} files that clients of older indexes may ask for have no copy "
+                    "and are left out"
+                ),
+                urgent=True,
+                key="store-lost",
+            )
+        )
+    if published.repaired:
+        count = len(published.repaired)
+        log(f"store repaired: {count} hash-named files restored")
+        alerts.append(
+            Alert(
+                kind="store-repaired",
+                text=f"{count} stored files were missing or damaged and were restored",
+            )
         )
     result = Result(alerts=tuple(alerts), failure=failure)
     emit(result)

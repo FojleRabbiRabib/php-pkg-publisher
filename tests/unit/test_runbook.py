@@ -137,6 +137,18 @@ def test_the_site_layout_the_rollback_and_rotation_steps_describe_is_the_codes(
     )
 
 
+def test_the_stored_file_section_quotes_what_the_code_says() -> None:
+    source = (ROOT / "publisher" / "generation.py").read_text(encoding="utf-8")
+    assert "lost" in source
+    runner = (ROOT / "publisher" / "run.py").read_text(encoding="utf-8")
+    for kind in ("store-repaired", "store-lost"):
+        assert f'kind="{kind}"' in runner
+        assert f"`{kind}` alert" in TEXT
+    assert generation.KEEP_TREES == 3
+    assert generation.LIVE_GENERATIONS == 3
+    assert "one of the last three generations" in TEXT
+
+
 def test_the_numbers_quoted_are_the_codes() -> None:
     assert (watch.TOKEN_WARNING_DAYS, watch.CERTIFICATE_WARNING_DAYS) == (30, 21)
     assert (watch.DATE_MAX_AGE_DAYS, watch.VALID_UNTIL_WARNING_DAYS) == (3, 7)

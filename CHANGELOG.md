@@ -321,6 +321,17 @@ All notable changes to this project are documented here. The format follows
   stored copy, a stored one stops the run with the usual message, and a manifest like that is
   refused as not valid.
 
+- A hash-named file that is missing or damaged in the store (a power cut, a deletion) no longer
+  blocks every later publish, which would have stopped the daily re-signing until `Valid-Until`
+  ran out. It is restored from the newest kept tree that still has its right bytes, or replaced by
+  the copy of the build in progress, and a `store-repaired` alert says so. A file that no tree has
+  is left out and an urgent `store-lost` alert (once a day) says so, because the publish used to
+  refuse and clients of that index could not fetch the file anyway. A damaged file that only its
+  age keeps (no kept index lists it) is dropped. The `rollback` command prints when it restored or
+  lost files, and the store directories that get a new link are now flushed too.
+- Temporary files that a crashed write left in `generations/` and in the site root were never
+  removed; the sweep at the start of every run now removes them.
+
 ### Security
 
 - Key fingerprints are now replaced before error text is cut to its length, so one that straddled
