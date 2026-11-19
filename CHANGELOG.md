@@ -273,6 +273,15 @@ All notable changes to this project are documented here. The format follows
   neither listed by GitHub nor admitted (a typo yanked nothing, silently), and a product whose
   newest admitted tag has no package for a declared PHP version or architecture (a widened
   declaration is not applied to tags admitted before).
+- An urgent `nudge-stale` alert from the hourly watch when the nudge file is older than 2 hours
+  (no run lasts that long): the path unit is not starting runs, for example after a start limit.
+  A nudge that cannot be examined alerts as `nudge-unreadable`.
+- Runbook: how to enable the units, what exit statuses 0, 1 and 143 mean, how to recover from the
+  start limit (`reset-failed`, then start the path unit), how to stop publishing for good, and what
+  to do with the `sync.rejected-` entries that a directory in the nudge directory leaves behind.
+- Security notes: the origin must accept Cloudflare only for the webhook throttle to trust
+  `CF-Connecting-IP`, and what a forged address can do (real deliveries refused with 429 for as long
+  as the forged requests continue, so publishing waits for the daily run).
 
 ### Changed
 
@@ -288,6 +297,9 @@ All notable changes to this project are documented here. The format follows
 - A listing fails as a whole when a release's own API URL does not name the product's repository,
   whichever form the page links take (`/repos/<owner>/<repo>` or `/repositories/<id>`). A release
   without that URL fails it too.
+- The key rotation step now says to switch to the new subkey at least 21 days before the old one
+  expires, not 14: the publisher refuses a subkey with 14 days or fewer left, so 14 days left no
+  margin.
 
 ### Fixed
 

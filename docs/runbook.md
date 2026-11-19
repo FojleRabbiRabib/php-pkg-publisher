@@ -1,8 +1,8 @@
 # Runbook
 
 How to configure the publisher and the commands you use day to day. It covers what runs on the
-publishing host as the publisher user; web server, CDN and systemd enablement steps are
-host-specific and are not here. Placeholders in angle brackets are yours to fill in:
+publishing host as the publisher user, and how to start, stop and recover its systemd units; web
+server and CDN steps are host-specific and are not here. Placeholders in angle brackets are yours to fill in:
 `<publisher-user>`, `<site-root>`, `<origin-public-ip>`, `<repo>`, `<tag>`, `<generation>`.
 
 ## What runs
@@ -20,8 +20,9 @@ The units run as `php-pkg-publisher`, from `/opt/php-pkg-publisher`, with the se
 `/etc/php-pkg-publisher/publisher.yml`. They are in `deploy/systemd/`.
 
 The watch alerts, at most once a day for each, when the GitHub token has fewer than 30 days left,
-the origin certificate fewer than 21, the served `InRelease` is older than 3 days, or its
-`Valid-Until` is fewer than 7 days away.
+the origin certificate fewer than 21, the served `InRelease` is older than 3 days, its
+`Valid-Until` is fewer than 7 days away, or the nudge file is older than 2 hours (no run lasts that
+long, so the path unit is not starting runs).
 
 ## The publisher user and its directories
 
@@ -147,6 +148,57 @@ A tag that fails is retried. Once it has failed at least 5 times and the first f
 3 days old it is quarantined and alerts. Fix the cause (an unsigned asset, a missing bundle) and
 `requeue` it.
 
+## Starting, stopping and recovering the units
+
+Install the six files of `deploy/systemd/` into `/etc/systemd/system/`, then enable the path unit
+and the two timers. Never enable the service itself: they start it.
+
+```sh
+systemctl daemon-reload
+systemctl enable --now php-pkg-publisher.path php-pkg-publisher.timer php-pkg-publisher-watch.timer
+```
+
+How a run ends:
+
+| Exit status | Meaning |
+|---|---|
+| 0 | Done. |
+| 1 | A pass failed, or the alert file is unusable. The nudge was handled and is not put back; the daily timer is the next try, and an alert says why. |
+| 143 | The run was stopped (a stop, a reboot). It put its nudge back and the unit does not count 143 as a failure. The one-hour timeout also ends the run with 143 and puts the nudge back, but systemd records it as a failed unit and an alert follows. |
+
+A run that raises also puts its nudge back, so the path unit starts it again at once. Systemd
+allows five starts within ten minutes and refuses the sixth (the journal says "Start request
+repeated too quickly"); the path unit fails too, so webhooks no longer start runs (the daily timer
+keeps trying). The watch alerts
+`nudge-stale` when the nudge file is older than 2 hours. Find the cause in
+`journalctl -u php-pkg-publisher.service`, then clear the limit and start watching again:
+
+```sh
+systemctl reset-failed php-pkg-publisher.service php-pkg-publisher.path
+systemctl start php-pkg-publisher.path
+```
+
+To stop publishing for good, stop the path unit and the timer. A run in progress goes on until it
+ends; `systemctl stop php-pkg-publisher.service` ends it (exit 143).
+
+```sh
+systemctl disable --now php-pkg-publisher.path php-pkg-publisher.timer
+```
+
+A stopped run leaves its nudge file, and the receiver keeps making one for every release, so
+nothing takes it. The watch then sends `nudge-stale` once a day. Either stop the watch as well
+(`systemctl disable --now php-pkg-publisher-watch.timer`) or take the webhook out of the web
+server and remove the nudge file.
+
+The web server's group may create entries in the nudge directory. If one named `sync` is not a
+file, the run sets it aside as `sync.rejected-` and a number, logs an error and goes on. Nothing
+removes them: look at what the web server's user put there, then delete them as root.
+
+```sh
+ls -l /var/lib/php-pkg-publisher/nudge
+rm -r /var/lib/php-pkg-publisher/nudge/sync.rejected-*
+```
+
 ## A stored file is missing
 
 The publisher keeps in `<site-root>/store/` every hash-named file that a client holding the index of
@@ -263,8 +315,10 @@ order:
    `runuser -u <publisher-user> -- gpg --homedir <signing-home> --list-secret-keys` lists the new
    subkey and shows the primary key as a stub (`sec#`). Running gpg as root would leave root-owned
    files in the home.
-3. At least 120 days after step 1, and at least 14 days before the old subkey expires, change
-   `signing.fingerprint` (and `signing.certificate`) to the new subkey. Never sign with both.
+3. At least 120 days after step 1, and at least 21 days before the old subkey expires, change
+   `signing.fingerprint` (and `signing.certificate`) to the new subkey. Never sign with both. The
+   publisher refuses a subkey that expires within 14 days of a run, so the old subkey is already
+   unusable at 14 days left and 21 leaves a week of margin.
 4. Keep the old subkey's revocation certificate offline.
 
 Before a rotation, run the key drill from a checkout. It needs docker with the pinned images

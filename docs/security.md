@@ -51,13 +51,14 @@ package signature.
 - The master key is offline. A repository subkey signs the metadata and an rpm subkey signs the
   rpms; both expire yearly, and revocation certificates for both are kept offline.
 - The publisher refuses to sign with a subkey, or under a primary key, that expires before the
-  metadata's `Valid-Until`, which is 14 days after it is signed.
+  metadata's `Valid-Until`, which is 14 days after it is signed, so a subkey with 14 days or
+  fewer left cannot be used.
 - **One signature per file.** A repository file carries one subkey's signature at a time:
   EL10 and Fedora 44 reject a detached `repomd.xml.asc` that holds two.
 - **Rotation order.** A client trusts a new subkey only once it holds the updated public key. So
   the keyring that contains the old and the new subkey ships at least 150 days before the old one
   expires; the repository keeps signing with the old subkey; and it switches to the new one at
-  least 120 days after the keyring shipped and at least 14 days before the old one expires.
+  least 120 days after the keyring shipped and at least 21 days before the old one expires.
   Clients with the new keyring verify before and after the switch. Clients without it fail at the
   switch and recover as described in [`installation.md`](installation.md), which quotes what each
   client reports. The key drill (`tests/container/test_key_drill.py`) proves both outcomes, on
@@ -85,6 +86,16 @@ package signature.
   signer who holds the key. The controls are a dedicated no-login user under a hardened service,
   subkey expiry and revocation, and the offline master key. No independent verifier checks the
   repository content before it is signed, so these controls are what limits a compromise.
+- **The webhook throttle trusts a header, and that holds only behind Cloudflare.** The receiver
+  limits each client address to 20 requests in 60 seconds and takes the address from
+  `CF-Connecting-IP`, which Cloudflare sets. The origin must therefore accept connections from
+  Cloudflare only: a client that reaches the origin directly can write any address into that
+  header, and so can use any address's allowance. Someone who sends 20 requests in a minute with
+  GitHub's address in the header makes the receiver answer GitHub's real deliveries with 429
+  until the minute is over, and keeps doing so while the requests continue. GitHub does not retry,
+  so publishing then falls back to the daily run, up to a day late. A forged request cannot start
+  a run on its own: the delivery must carry a valid signature. When
+  the table of counters is full, the throttle lets requests through instead of refusing them.
 - **Package bytes never come from the repository host.** Every download is redirected to the
   matching GitHub release asset, so the host cannot alter a package without also forging its
   hash in signed metadata.
