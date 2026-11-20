@@ -58,6 +58,43 @@ def test_the_guide_quotes_what_each_client_reports_after_a_key_rotation() -> Non
     assert "`Signing key not found` on Enterprise Linux 10 and Fedora" in text
 
 
+def _guide_text() -> str:
+    return " ".join(GUIDE.read_text(encoding="utf-8").split())
+
+
+def test_the_guide_describes_the_setup_script_as_it_behaves() -> None:
+    script = (GUIDE.parents[1] / "setup.sh").read_text(encoding="utf-8")
+    text = _guide_text()
+    assert "--fingerprint" in script
+    assert "sh setup.sh --fingerprint <fingerprint published with the key ceremony>" in text
+    assert "stops, before the keyring package is installed, imported or written" in text
+    assert "a missing gpg is installed from your distribution first" in text
+    assert "the keyring package stays installed" in text
+    assert "takes out the key it imported" in text
+    # the script turns on the section of an installed PHP and never turns one off
+    assert "turns on the section of each PHP version it finds installed" in text
+    assert "never turns one off" in text
+    assert "dnf 5's `dnf config-manager setopt`" in text
+    assert "With dnf 4, turn the section off again after a re-run." in text
+
+
+def test_the_guide_claims_only_the_architectures_the_container_layer_runs() -> None:
+    """When an arm64 or aarch64 container test is added, the guide's wording must follow."""
+    text = _guide_text()
+    assert "on `amd64` (apt) and `x86_64` (dnf)" in text
+    assert "nothing tests them yet" in text
+    container = GUIDE.parents[1] / "tests" / "container"
+    arm = [p.name for p in container.glob("*.py") if re.search("arm64|aarch64", p.read_text())]
+    assert arm == [], f"{arm} mention arm: say tested in the guide, or remove the arm run"
+
+
+def test_the_dnf_removal_block_takes_the_imported_key_out_of_rpm() -> None:
+    (block,) = [b.text for b in blocks() if b.family == "dnf" and b.remove]
+    assert "rpm -e" in block and "gpg-pubkey" in block
+    # the fingerprint is read before the package that holds the key file is removed
+    assert block.index("--show-keys") < block.index("dnf remove")
+
+
 def test_the_guide_uses_one_placeholder_for_the_extension_and_one_for_the_fingerprint() -> None:
     text = GUIDE.read_text(encoding="utf-8")
     assert set(re.findall(r"<[a-z][a-z -]*>", text)) <= {

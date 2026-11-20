@@ -279,6 +279,12 @@ All notable changes to this project are documented here. The format follows
 - Runbook: how to enable the units, what exit statuses 0, 1 and 143 mean, how to recover from the
   start limit (`reset-failed`, then start the path unit), how to stop publishing for good, and what
   to do with the `sync.rejected-` entries that a directory in the nudge directory leaves behind.
+- `setup.sh --fingerprint FINGERPRINT`: the script reads the key out of the keyring package without
+  installing it, prints its fingerprint and expiry, and stops before the keyring package is
+  installed, imported or written when the primary key is not the one given (a missing gpg is
+  installed from the distribution first, to read the key). With the option, a key file that holds
+  more than one primary key is refused too, because the whole file would be trusted. The script
+  checks that the installed key file is the key it showed.
 - Security notes: the origin must accept Cloudflare only for the webhook throttle to trust
   `CF-Connecting-IP`, and what a forged address can do (real deliveries refused with 429 for as long
   as the forged requests continue, so publishing waits for the daily run).
@@ -297,6 +303,15 @@ All notable changes to this project are documented here. The format follows
 - A listing fails as a whole when a release's own API URL does not name the product's repository,
   whichever form the page links take (`/repos/<owner>/<repo>` or `/repositories/<id>`). A release
   without that URL fails it too.
+- `setup.sh` shows the key before it installs the keyring package, not after the repository was
+  trusted. It needs `tar`, and `rpm2archive` on dnf. Without `--fingerprint` the key is still
+  trusted on first use, and the script and the install guide say so.
+- The install guide says it was tested on `amd64` and `x86_64` only; no container test runs
+  `arm64` or `aarch64`, which the repository accepts. A test fails if one is added without the
+  guide changing.
+- The install guide explains `setup.sh` and what a second run does on dnf: it turns on the section
+  of each PHP it finds installed, so a section turned off by hand in the repository file is turned
+  on again.
 - The key rotation step now says to switch to the new subkey at least 21 days before the old one
   expires, not 14: the publisher refuses a subkey with 14 days or fewer left, so 14 days left no
   margin.
@@ -346,6 +361,10 @@ All notable changes to this project are documented here. The format follows
 - A delivery that arrived in the instant the publisher took the nudge file got a 500, a failed
   delivery in GitHub's webhook log, although nothing was lost. The receiver now makes a new nudge
   (one retry; a second failure is still a 500); the publisher skips a pass that finds no change.
+- The rpm key stayed trusted after the install guide's removal block, and after a `setup.sh` run
+  that was refused. The dnf removal block now takes the imported key out of rpm's key store (one
+  rule for rpm 4 and for rpm 6, which names the key differently), and `setup.sh` takes out a key
+  only if that run imported it. Its comment now says what is put back and what is not.
 
 ### Security
 

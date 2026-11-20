@@ -332,10 +332,232 @@ def test_a_key_file_that_gpg_cannot_read_stops_the_script_with_no_fingerprint(
 ) -> None:
     bad = tmp_path / "bad.gpg"
     bad.write_text("not a key\n")
-    done = _call(tmp_path, f"print_key {bad}\necho still-running")
+    done = _call(tmp_path, f"print_key {bad} label\necho still-running")
     assert done.returncode == 1
     assert "gpg cannot read" in done.stderr
     assert "still-running" not in done.stdout
+
+
+FINGERPRINT: Final = "0123456789ABCDEF0123456789ABCDEF01234567"
+
+
+@pytest.mark.parametrize(
+    "given",
+    [FINGERPRINT, FINGERPRINT.lower(), " ".join(FINGERPRINT[i : i + 4] for i in range(0, 40, 4))],
+)
+def test_the_fingerprint_option_takes_forty_digits_in_any_case_with_or_without_spaces(
+    tmp_path: Path, given: str
+) -> None:
+    done = _call(tmp_path, f"parse_arguments --fingerprint '{given}'\necho \"[$FINGERPRINT]\"")
+    assert (done.returncode, done.stdout) == (0, f"[{FINGERPRINT}]\n"), done.stderr
+
+
+def test_without_arguments_no_fingerprint_is_required(tmp_path: Path) -> None:
+    done = _call(tmp_path, 'parse_arguments\necho "[$FINGERPRINT]"')
+    assert (done.returncode, done.stdout) == (0, "[]\n"), done.stderr
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--help"],
+        ["--fingerprint"],
+        [FINGERPRINT],
+        ["--fingerprint", FINGERPRINT, "extra"],
+        ["--other", FINGERPRINT],
+        ["--fingerprint", FINGERPRINT[:39]],
+        ["--fingerprint", FINGERPRINT + "0"],
+        ["--fingerprint", "G" * 40],
+        ["--fingerprint", ""],
+    ],
+)
+def test_anything_but_the_fingerprint_option_with_a_fingerprint_is_refused(
+    tmp_path: Path, arguments: list[str]
+) -> None:
+    words = " ".join(f"'{word}'" for word in arguments)
+    done = _call(tmp_path, f"parse_arguments {words}\necho still-running")
+    assert done.returncode == 1
+    assert done.stderr.startswith("setup.sh: ")
+    assert "still-running" not in done.stdout
+
+
+@pytest.mark.skipif(shutil.which("gpg") is None, reason="gpg is needed")
+def test_print_key_remembers_the_primary_key_and_not_a_subkey(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir(mode=0o700)
+    gpg = ["gpg", "--homedir", str(home), "--batch", "--pinentry-mode", "loopback"]
+    gpg += ["--passphrase", ""]
+    subprocess.run(  # noqa: S603
+        [*gpg, "--quick-gen-key", "Probe <probe@example.invalid>", "rsa2048", "sign", "1d"],
+        check=True,
+        capture_output=True,
+    )
+    listing = subprocess.run(  # noqa: S603
+        [*gpg, "--with-colons", "--list-keys"], check=True, capture_output=True, text=True
+    ).stdout
+    primary = next(line.split(":")[9] for line in listing.splitlines() if line.startswith("fpr"))
+    subprocess.run(  # noqa: S603
+        [*gpg, "--quick-add-key", primary, "rsa2048", "sign", "1d"],
+        check=True,
+        capture_output=True,
+    )
+    key = tmp_path / "key.gpg"
+    key.write_bytes(
+        subprocess.run([*gpg, "--export"], check=True, capture_output=True).stdout  # noqa: S603
+    )
+    subprocess.run(  # noqa: S603
+        [_shell("gpgconf"), "--homedir", str(home), "--kill", "all"], check=False
+    )
+    body = f'print_key {key} "in the test"\necho "[$PRIMARY] [$PRIMARIES] [$ALL_PRIMARIES]"'
+    done = _call(tmp_path, body)
+    assert done.returncode == 0, done.stderr
+    lines = done.stdout.splitlines()
+    assert lines[0] == "Key in the test:"
+    assert lines[1].startswith(f"  primary key {primary}, expires ")
+    assert lines[2].startswith("  signing subkey ")
+    assert lines[2].split()[2].rstrip(",") != primary
+    # a subkey is neither the primary key nor one of the primary keys
+    assert lines[-1] == f"[{primary}] [1] [{primary} ]"
+
+
+@pytest.mark.skipif(shutil.which("gpg") is None, reason="gpg is needed")
+def test_a_file_with_two_primary_keys_is_counted_and_the_first_is_the_one_remembered(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir(mode=0o700)
+    gpg = ["gpg", "--homedir", str(home), "--batch", "--pinentry-mode", "loopback"]
+    gpg += ["--passphrase", ""]
+    for name in ("one", "two"):
+        subprocess.run(  # noqa: S603
+            [*gpg, "--quick-gen-key", f"{name} <{name}@example.invalid>", "rsa2048", "sign", "1d"],
+            check=True,
+            capture_output=True,
+        )
+    key = tmp_path / "keys.gpg"
+    key.write_bytes(
+        subprocess.run([*gpg, "--export"], check=True, capture_output=True).stdout  # noqa: S603
+    )
+    subprocess.run(  # noqa: S603
+        [_shell("gpgconf"), "--homedir", str(home), "--kill", "all"], check=False
+    )
+    done = _call(tmp_path, f'print_key {key} x\necho "[$PRIMARY] [$PRIMARIES] [$ALL_PRIMARIES]"')
+    assert done.returncode == 0, done.stderr
+    shown = [
+        line.split()[2].rstrip(",") for line in done.stdout.splitlines() if "primary key" in line
+    ]
+    assert len(shown) == 2
+    assert done.stdout.splitlines()[-1] == f"[{shown[0]}] [2] [{shown[0]} {shown[1]} ]"
+
+
+@pytest.mark.parametrize(
+    ("given", "primaries", "primary", "refusal"),
+    [
+        # no fingerprint given: trust on first use, nothing is compared, whatever the file holds
+        ("", 1, "AAAA", ""),
+        ("", 2, "AAAA", ""),
+        (FINGERPRINT, 1, FINGERPRINT, ""),
+        (FINGERPRINT, 1, "AAAA", "is not the fingerprint you gave; nothing was installed"),
+        (FINGERPRINT, 2, FINGERPRINT, "must hold exactly one primary key; nothing was installed"),
+        (FINGERPRINT, 0, "", "must hold exactly one primary key; nothing was installed"),
+    ],
+)
+def test_with_a_fingerprint_the_key_file_must_hold_that_one_primary_key_and_no_other(
+    tmp_path: Path, given: str, primaries: int, primary: str, refusal: str
+) -> None:
+    body = (
+        f"FINGERPRINT='{given}'\nPRIMARIES={primaries}\nPRIMARY='{primary}'\ncheck_key\necho passed"
+    )
+    done = _call(tmp_path, body)
+    if refusal:
+        assert done.returncode == 1
+        assert refusal in done.stderr
+        assert "passed" not in done.stdout
+    else:
+        assert (done.returncode, done.stdout) == (0, "passed\n"), done.stderr
+
+
+def test_a_key_file_that_is_not_the_one_shown_is_refused(tmp_path: Path) -> None:
+    shown = tmp_path / "shown"
+    shown.write_bytes(b"key A")
+    same = tmp_path / "same"
+    same.write_bytes(b"key A")
+    other = tmp_path / "other"
+    other.write_bytes(b"key B")
+    work = f"TMP={tmp_path}\ncp {shown} {tmp_path}/key.pub\n"
+    assert _call(tmp_path, f"{work}confirm_key {same}").returncode == 0
+    for target in (other, tmp_path / "missing"):
+        done = _call(tmp_path, f"{work}confirm_key {target}\necho still-running")
+        assert done.returncode == 1
+        assert "still-running" not in done.stdout
+    assert "is not the key that was shown" in _call(tmp_path, f"{work}confirm_key {other}").stderr
+    empty = tmp_path / "empty"
+    empty.write_bytes(b"")
+    assert "did not install" in _call(tmp_path, f"{work}confirm_key {empty}").stderr
+
+
+SECOND: Final = "89ABCDEF" * 5
+
+
+def _rpm_stub(tmp_path: Path, before: str, adds: str) -> str:
+    """A shell `rpm` over a key store in a file: `--import` adds the `adds` not yet there."""
+    store = tmp_path / "store"
+    store.write_text(before)
+    return (
+        f"rpm() {{\n"
+        f'\tcase "$1" in\n'
+        f"\t-qa) cat {store} ;;\n"
+        f'\t--import) for v in {adds}; do case " $(cat {store}) " in *" $v "*) ;; '
+        f"*) printf '%s ' \"$v\" >> {store} ;; esac; done ;;\n"
+        f"\t-e) printf '%s\\n' \"$*\" >> {tmp_path}/erased ;;\n"
+        f"\tesac\n}}\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("before", "adds", "expected"),
+    [
+        ("11111111 ", "01234567", ["01234567"]),  # rpm 4: the end of the fingerprint, 8 digits
+        ("11111111 ", FINGERPRINT.lower(), [FINGERPRINT.lower()]),  # rpm 6: all forty digits
+        ("01234567 ", "01234567", []),  # already in the store: not ours to take out again
+        ("", "99999999", []),  # a key of some other fingerprint is not the one imported
+        ("", "01234567 89abcdef", ["01234567", "89abcdef"]),  # every primary key of the file
+        ("89abcdef ", "01234567 89abcdef", ["01234567"]),  # only the one that was not there
+    ],
+)
+def test_only_the_keys_this_run_added_to_the_store_are_remembered_for_the_roll_back(
+    tmp_path: Path, before: str, adds: str, expected: list[str]
+) -> None:
+    body = (
+        _rpm_stub(tmp_path, before, adds)
+        + f'ALL_PRIMARIES="{FINGERPRINT} {SECOND} "\nimport_key /key\necho "[$IMPORTED]"'
+    )
+    done = _call(tmp_path, body)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip("[]\n").split() == expected, done.stdout
+
+
+def test_cleanup_takes_every_imported_key_out_and_only_those(tmp_path: Path) -> None:
+    stub = _rpm_stub(tmp_path, "", "x")
+    work = tmp_path / "work"
+    work.mkdir()
+    done = _call(tmp_path, f"{stub}TMP={work}\nIMPORTED='01234567 89abcdef '\ncleanup")
+    assert done.returncode == 0, done.stderr
+    assert (tmp_path / "erased").read_text() == ("-e gpg-pubkey-01234567\n-e gpg-pubkey-89abcdef\n")
+    (tmp_path / "erased").unlink()
+    work.mkdir()
+    done = _call(tmp_path, f"{stub}TMP={work}\nIMPORTED=''\ncleanup")
+    assert done.returncode == 0, done.stderr
+    assert not (tmp_path / "erased").exists()
+
+
+def test_a_failed_removal_of_the_key_does_not_stop_the_clean_up(tmp_path: Path) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    body = f"TMP={work}\nrpm() {{ return 1; }}\nIMPORTED=01234567\ncleanup\necho done"
+    done = _call(tmp_path, body)
+    assert (done.returncode, done.stdout) == (0, "done\n"), done.stderr
+    assert not work.exists()
 
 
 def test_the_apt_index_is_looked_for_in_the_lists_directory(tmp_path: Path) -> None:
@@ -391,8 +613,8 @@ def test_a_user_who_is_not_root_is_refused_and_nothing_is_written(shell: str) ->
     assert "it must run as root" in done.stderr
 
 
-@NOT_ROOT
-def test_arguments_are_refused() -> None:
+def test_an_argument_other_than_the_fingerprint_option_is_refused_before_anything_else() -> None:
     done = _run("dash", "--help")
     assert done.returncode == 1
-    assert "takes no arguments" in done.stderr
+    assert done.stdout == ""
+    assert "the only option is --fingerprint" in done.stderr
