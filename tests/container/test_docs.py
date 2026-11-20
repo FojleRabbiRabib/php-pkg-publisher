@@ -50,6 +50,7 @@ def test_the_commands_of_the_install_guide_run_on_each_distribution(
         Mirror(rig, served(packages)) as mirror,
         Box(image, kit_dir(tmp_path / "kit", php_rpms, mirror)) as box,
     ):
+        keys = set(box.run("sh", "-c", "rpm -qa 'gpg-pubkey*' 2>/dev/null || true").output.split())
         for block in (b for b in mine if not b.remove):
             done = box.run("sh", "-ec", runnable(block, site=mirror.base, extension="a"))
             assert done.code == 0, f"{block.text}\n{done.output}"
@@ -67,3 +68,6 @@ def test_the_commands_of_the_install_guide_run_on_each_distribution(
             assert done.code == 0, f"{block.text}\n{done.output}"
         assert box.run("sh", "-c", f"ls {APT_SOURCES}").code != 0 or image.family == "dnf"
         assert box.run("sh", "-c", f"ls {DNF_REPO}").code != 0 or image.family == "apt"
+        # the key the guide imported is out of rpm's key store again, and no other key went
+        left = set(box.run("sh", "-c", "rpm -qa 'gpg-pubkey*' 2>/dev/null || true").output.split())
+        assert left == keys, (keys, left)

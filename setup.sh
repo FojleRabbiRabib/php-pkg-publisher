@@ -5,10 +5,18 @@
 # Adds the Rabib PHP extension repository to this host: apt on Debian and Ubuntu, dnf on
 # Enterprise Linux and Fedora. Run it as root.
 #
-# It downloads the keyring package from BASE/keyring/, installs it, writes the repository
-# definition, refreshes the package indexes and prints the fingerprint and expiry of the
-# installed key. That first download is trust on first use: compare the printed fingerprint
-# with the one published in the project's README before you trust the repository.
+# It downloads the keyring package from BASE/keyring/, reads the key out of it without
+# installing it and prints the key's fingerprint and expiry. Only then does it install the
+# package, write the repository definition and refresh the package indexes.
+#
+#   sh setup.sh --fingerprint FINGERPRINT
+#
+# stops, before the keyring package is installed, imported or written, when the primary key in
+# the package is not the one given. (Reading the key needs gpg: one that is missing is installed
+# from the distribution first.) Without the option the first download is trust on first use: the
+# key is installed whatever it is, so compare the printed fingerprint with the one published in
+# the project's README, and give it to the option the next time. With the option, a key file
+# that holds more than one primary key is refused too, because the whole file is trusted.
 #
 # Everything is defined in functions and runs from the last line, so a download that is cut
 # short runs nothing.
@@ -37,6 +45,11 @@ PENDING=''
 HAD_FILE=0
 HAD_INDEX=0
 ROLLBACK=''
+FINGERPRINT=''
+PRIMARY=''
+PRIMARIES=0
+ALL_PRIMARIES=''
+IMPORTED=''
 
 die() {
 	printf 'setup.sh: %s\n' "$*" >&2
@@ -47,8 +60,9 @@ say() {
 	printf '%s\n' "$*"
 }
 
-# Runs on every exit, so a failure, a set -e abort and a signal all leave the host as found: a
-# repository definition that was written and not yet confirmed is put back with its index.
+# Runs on every exit, so a failure, a set -e abort and a signal all put back what this run
+# changed and had not confirmed: the repository definition and its index, and the rpm key this
+# run imported. The keyring package, once installed, stays installed.
 cleanup() {
 	if [ -n "$PENDING" ]; then
 		rm -f -- "$PENDING"
@@ -57,6 +71,9 @@ cleanup() {
 		roll_back "$ROLLBACK" || true
 		restore_index || true
 	fi
+	for version in $IMPORTED; do
+		rpm -e "gpg-pubkey-$version" >/dev/null 2>&1 || true
+	done
 	if [ -n "$TMP" ]; then
 		rm -rf -- "$TMP"
 	fi
@@ -95,6 +112,7 @@ detect_family() {
 }
 
 check_platform() {
+	command -v tar >/dev/null 2>&1 || die 'tar is required to read the key out of the package'
 	if [ "$FAMILY" = apt ]; then
 		command -v apt-get >/dev/null 2>&1 || die 'apt-get is not installed'
 		command -v dpkg-deb >/dev/null 2>&1 || die 'dpkg-deb is not installed'
@@ -106,6 +124,7 @@ check_platform() {
 	else
 		command -v dnf >/dev/null 2>&1 || die 'dnf is not installed'
 		command -v rpm >/dev/null 2>&1 || die 'rpm is not installed'
+		command -v rpm2archive >/dev/null 2>&1 || die 'rpm2archive is required to read the key out of the package'
 		machine=$(uname -m)
 		case "$machine" in
 		x86_64 | aarch64) ;;
@@ -389,9 +408,10 @@ install_apt() {
 	fetch "$APT_PACKAGE.deb" "$TMP/$APT_PACKAGE.deb"
 	name=$(dpkg-deb -f "$TMP/$APT_PACKAGE.deb" Package) || die 'the downloaded file is not a deb package'
 	[ "$name" = "$APT_PACKAGE" ] || die "the downloaded package is $name, not $APT_PACKAGE"
+	show_key "$TMP/$APT_PACKAGE.deb" "$APT_KEY"
 	DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
 		"$TMP/$APT_PACKAGE.deb" </dev/null || die "cannot install $APT_PACKAGE"
-	[ -s "$APT_KEY" ] || die "$APT_PACKAGE did not install $APT_KEY"
+	confirm_key "$APT_KEY"
 	remember "$APT_SOURCES"
 	ROLLBACK=$APT_SOURCES
 	write_file "$APT_SOURCES" "$(apt_sources_text)"
@@ -440,13 +460,14 @@ install_dnf() {
 	name=$(rpm -qp --nosignature --qf '%{NAME}' "$TMP/$RPM_PACKAGE.rpm") \
 		|| die 'the downloaded file is not an rpm package'
 	[ "$name" = "$RPM_PACKAGE" ] || die "the downloaded package is $name, not $RPM_PACKAGE"
+	show_key "$TMP/$RPM_PACKAGE.rpm" "$RPM_KEY"
 	# An empty reposdir keeps dnf from reading any repository for a package that needs none.
 	mkdir "$TMP/no-repos"
 	dnf install --assumeyes --setopt="reposdir=$TMP/no-repos" "$TMP/$RPM_PACKAGE.rpm" </dev/null \
 		|| die "cannot install $RPM_PACKAGE"
-	[ -s "$RPM_KEY" ] || die "$RPM_PACKAGE did not install $RPM_KEY"
+	confirm_key "$RPM_KEY"
 	# rpm 6 cannot import a key inside a package transaction, so the import happens here.
-	rpm --import "$RPM_KEY" || die "cannot import $RPM_KEY"
+	import_key "$RPM_KEY"
 	enable=$(without_versions "$(detected_php)$(enabled_php)" "$(override_off)")
 	remember "$DNF_REPO"
 	ROLLBACK=$DNF_REPO
@@ -454,10 +475,11 @@ install_dnf() {
 	if [ -n "$enable" ]; then
 		say 'Refreshing the package metadata'
 		if ! refresh_dnf; then
-			die 'dnf makecache failed or refused the repository; the repository file was put back'
+			die 'dnf makecache failed or refused the repository; the repository file was put back and the key taken out'
 		fi
 	fi
 	ROLLBACK=''
+	IMPORTED=''
 	REPO_ENABLED=$enable
 }
 
@@ -484,8 +506,10 @@ expiry_text() {
 	fi
 }
 
+# Print the primary key and the signing subkeys of the key file $1, headed by the name $2, and
+# remember the primary key's fingerprint in PRIMARY.
 print_key() {
-	say "Key $1:"
+	say "Key $2:"
 	# A private home keeps gpg from creating one for root; the output is read from a file so a
 	# gpg failure stops the script instead of vanishing inside a pipeline.
 	mkdir "$TMP/gnupg"
@@ -500,6 +524,7 @@ print_key() {
 		pub)
 			kind='primary key'
 			ends=$expires
+			PRIMARIES=$((PRIMARIES + 1))
 			;;
 		sub)
 			kind='signing subkey'
@@ -507,11 +532,92 @@ print_key() {
 			;;
 		fpr)
 			printf '  %s %s, %s\n' "$kind" "$value" "$(expiry_text "$ends")"
+			if [ "$kind" = 'primary key' ]; then
+				ALL_PRIMARIES="$ALL_PRIMARIES$value "
+				if [ -z "$PRIMARY" ]; then
+					PRIMARY=$value
+				fi
+			fi
 			shown=1
 			;;
 		esac
 	done <"$TMP/key.colons"
 	[ "$shown" = 1 ] || die "no fingerprint found in $1"
+}
+
+# The option is the only argument: --fingerprint and the 40 hexadecimal digits of the primary key.
+parse_arguments() {
+	[ "$#" -eq 0 ] && return 0
+	if [ "$#" -ne 2 ] || [ "$1" != --fingerprint ]; then
+		die 'the only option is --fingerprint followed by the fingerprint of the primary key'
+	fi
+	FINGERPRINT=$(printf '%s' "$2" | tr -d ' ' | tr '[:lower:]' '[:upper:]')
+	case "$FINGERPRINT" in
+	*[!0-9A-F]*) die "$2 is not a fingerprint: it has 40 hexadecimal digits" ;;
+	esac
+	[ "${#FINGERPRINT}" -eq 40 ] || die "$2 is not a fingerprint: it has 40 hexadecimal digits"
+}
+
+# Read the key file $2 out of the package $1 into $TMP/key.pub without installing anything.
+extract_key() {
+	if [ "$FAMILY" = apt ]; then
+		dpkg-deb --fsys-tarfile "$1" | tar -xO ".$2" >"$TMP/key.pub" || true
+	else
+		rpm2archive - <"$1" | tar -xzO ".$2" >"$TMP/key.pub" || true
+	fi
+	[ -s "$TMP/key.pub" ] || die "the downloaded package does not hold $2"
+}
+
+# The key to be installed, shown and checked before the package is installed: installing a
+# package runs its scripts as root, so the check cannot wait until afterwards.
+show_key() {
+	extract_key "$1" "$2"
+	ensure_gpg
+	print_key "$TMP/key.pub" "in the package ($2)"
+	check_key
+}
+
+# With a fingerprint given, the key file must hold that primary key and no other: the file is
+# trusted whole, so a second primary key would be trusted without being compared.
+check_key() {
+	[ -n "$FINGERPRINT" ] || return 0
+	[ "$PRIMARIES" -eq 1 ] || die 'the package must hold exactly one primary key; nothing was installed'
+	[ "$PRIMARY" = "$FINGERPRINT" ] \
+		|| die 'the primary key in the package is not the fingerprint you gave; nothing was installed'
+}
+
+# The file the package installed is the key that was shown.
+confirm_key() {
+	[ -s "$1" ] || die "the package did not install $1"
+	[ "$(sha256sum <"$TMP/key.pub")" = "$(sha256sum <"$1")" ] \
+		|| die "$1 is not the key that was shown"
+}
+
+# The versions of the keys in rpm's key store, as "ab12cd34 ", a key's version being the end of its
+# fingerprint (eight digits, or all forty in rpm 6).
+key_versions() {
+	rpm -qa gpg-pubkey --qf '%{VERSION} ' 2>/dev/null || true
+}
+
+# Import the key file $1 into rpm, and remember which keys of the store are new (those of the
+# primary keys of the file), so that a run that fails afterwards can take them out again.
+import_key() {
+	before=$(key_versions)
+	rpm --import "$1" || die "cannot import $1"
+	for version in $(key_versions); do
+		if has_word "$before" "$version"; then
+			continue
+		fi
+		for fingerprint in $ALL_PRIMARIES; do
+			lower=$(printf '%s' "$fingerprint" | tr '[:upper:]' '[:lower:]')
+			case "$lower" in
+			*"$version")
+				IMPORTED="$IMPORTED$version "
+				break
+				;;
+			esac
+		done
+	done
 }
 
 print_dnf_hint() {
@@ -527,7 +633,7 @@ print_dnf_hint() {
 }
 
 main() {
-	[ "$#" -eq 0 ] || die 'this script takes no arguments'
+	parse_arguments "$@"
 	[ "$(id -u)" -eq 0 ] || die 'it must run as root, so start it with sudo'
 	detect_family
 	check_platform
@@ -538,15 +644,16 @@ main() {
 	REPO_ENABLED=''
 	if [ "$FAMILY" = apt ]; then
 		install_apt
-		key=$APT_KEY
 	else
 		install_dnf
-		key=$RPM_KEY
 	fi
-	ensure_gpg
-	print_key "$key"
-	say 'Compare the fingerprint above with the one published in the project README before you'
-	say 'trust this repository.'
+	if [ -n "$FINGERPRINT" ]; then
+		say 'The key matches the fingerprint you gave.'
+	else
+		say 'No fingerprint was given, so this key is trusted on first use: compare the fingerprint'
+		say 'above with the one published in the project README, and give it to --fingerprint when'
+		say 'you run this script again.'
+	fi
 	if [ "$FAMILY" = dnf ] && [ -z "$REPO_ENABLED" ]; then
 		print_dnf_hint
 	else

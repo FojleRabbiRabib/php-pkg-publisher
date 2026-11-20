@@ -2,6 +2,7 @@
 # Copyright 2026 Fojle Rabbi (Rabib)
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 from collections.abc import Generator, Iterator
@@ -312,6 +313,110 @@ def test_an_admitted_tag_whose_digest_changed_is_kept_and_reported(world: World)
     report = world.run(A, now=NOW + 1)
     assert ("a-php", "v1.0.0", "changed") in _kinds(report)
     assert world.state(A.repo).admitted["v1.0.0"].packages[0].sha256 != "0" * 64
+
+
+def _wide(*, php: tuple[str, ...] = ("8.3", "8.4")) -> config.Product:
+    return dataclasses.replace(A, php=php)
+
+
+def test_an_exclusion_of_a_tag_that_does_not_exist_is_reported_on_every_run(world: World) -> None:
+    world.feeds[A.repo] = _listing(_release(A, "v1.0.0"))
+    typo = (config.Exclusion(product=A.repo, tag="v1.0.9"),)
+    first = world.run(A, exclusions=typo)
+    assert ("a-php", "v1.0.9", "exclusion-unmatched") in _kinds(first)
+    again = world.run(A, now=NOW + 60, exclusions=typo)  # the listing is answered with a 304
+    assert world.list_calls[-1] == (A.repo, ETAG)
+    assert ("a-php", "v1.0.9", "exclusion-unmatched") in _kinds(again)
+
+
+def test_an_exclusion_in_products_yml_is_checked_the_same_way(world: World) -> None:
+    world.feeds[A.repo] = _listing(_release(A, "v1.0.0"))
+    report = world.run(dataclasses.replace(A, exclude=("v1.0.9",)))
+    assert ("a-php", "v1.0.9", "exclusion-unmatched") in _kinds(report)
+
+
+def test_an_exclusion_of_a_listed_or_an_admitted_tag_is_not_reported(world: World) -> None:
+    world.feeds[A.repo] = _listing(_release(A, "v1.0.0"), _release(A, "v1.1.0"))
+    world.run(A)
+    # v1.0.0 vanished from the listing
+    world.feeds[A.repo] = _listing(_release(A, "v1.1.0"), _release(A, "v1.2.0"), etag='"listing-2"')
+    names = ("v1.0.0", "v1.1.0", "v1.2.0")  # admitted and vanished, admitted, listed only
+    yank = tuple(config.Exclusion(product=A.repo, tag=t) for t in names)
+    report = world.run(A, now=NOW + 60, exclusions=yank)
+    assert "exclusion-unmatched" not in [kind for _, _, kind in _kinds(report)]
+
+
+def test_an_exclusion_is_not_judged_before_the_product_was_listed(world: World) -> None:
+    world.feeds[A.repo] = feed.FeedError("down")
+    report = world.run(A, exclusions=(config.Exclusion(product=A.repo, tag="v1.0.9"),))
+    assert [kind for _, _, kind in _kinds(report)] == ["product-error"]
+
+
+def test_a_widened_declaration_is_reported_while_the_newest_tag_lacks_the_new_cell(
+    world: World,
+) -> None:
+    world.feeds[A.repo] = _listing(_release(A, "v1.0.0"))
+    world.run(A)
+    report = world.run(_wide(), now=NOW + 60)  # a 304: no tag is verified again
+    assert world.verify_calls == [(A.repo, "v1.0.0")]
+    (event,) = [e for e in report.events if e.kind == "cell-missing"]
+    assert (event.tag, event.detail) == (
+        "v1.0.0",
+        "the newest admitted tag has no package for php8.4 amd64",
+    )
+
+
+def test_a_widened_declaration_is_not_reported_once_a_new_tag_carries_the_cell(
+    world: World,
+) -> None:
+    world.feeds[A.repo] = _listing(_release(A, "v1.0.0"))
+    world.run(A)
+    world.feeds[A.repo] = _listing(
+        _release(_wide(), "v1.1.0"), _release(A, "v1.0.0"), etag='"listing-2"'
+    )
+    report = world.run(_wide(), now=NOW + 60)
+    assert ("a-php", "v1.1.0", "admitted") in _kinds(report)
+    assert "cell-missing" not in [kind for _, _, kind in _kinds(report)]
+
+
+def test_the_cell_check_looks_at_the_newest_tag_that_is_still_served(world: World) -> None:
+    world.feeds[A.repo] = _listing(_release(A, "v1.0.0"))
+    world.run(A)
+    world.feeds[A.repo] = _listing(
+        _release(_wide(), "v1.1.0"), _release(A, "v1.0.0"), etag='"listing-2"'
+    )
+    world.run(_wide(), now=NOW + 60)
+    yank = (config.Exclusion(product=A.repo, tag="v1.1.0"),)  # v1.0.0 is served again
+    report = world.run(_wide(), now=NOW + 120, exclusions=yank)
+    (event,) = [e for e in report.events if e.kind == "cell-missing"]
+    assert event.tag == "v1.0.0"
+
+
+def test_several_tags_without_the_new_cell_give_one_report_for_the_newest(world: World) -> None:
+    world.feeds[A.repo] = _listing(_release(A, "v1.0.0"), _release(A, "v1.1.0"))
+    world.run(A)
+    report = world.run(_wide(), now=NOW + 60)
+    assert [e.tag for e in report.events if e.kind == "cell-missing"] == ["v1.1.0"]
+
+
+def test_a_narrowed_declaration_is_not_reported(world: World) -> None:
+    world.feeds[A.repo] = _listing(_release(_wide(), "v1.0.0"))
+    world.run(_wide())
+    report = world.run(A, now=NOW + 60)
+    assert report.events == ()
+
+
+def test_a_tag_excluded_in_both_files_is_reported_once(world: World) -> None:
+    world.feeds[A.repo] = _listing(_release(A, "v1.0.0"))
+    both = (config.Exclusion(product=A.repo, tag="v1.0.9"),)
+    report = world.run(dataclasses.replace(A, exclude=("v1.0.9",)), exclusions=both)
+    assert [e.tag for e in report.events if e.kind == "exclusion-unmatched"] == ["v1.0.9"]
+
+
+def test_nothing_is_said_about_cells_when_no_tag_is_admitted(world: World) -> None:
+    world.feeds[A.repo] = _listing()
+    report = world.run(_wide())
+    assert report.events == ()
 
 
 def test_a_failed_tag_that_is_no_longer_listed_is_forgotten(world: World) -> None:
@@ -853,3 +958,26 @@ def test_a_skipped_product_still_raises_its_quarantine_alerts(world: World) -> N
     world.feeds[A.repo] = feed.NotFound("repository or releases not found (404)")
     kinds = [kind for _, _, kind in _kinds(world.run(A))]
     assert sorted(kinds) == ["product-error", "quarantine-alert"]
+
+
+def test_a_quarantined_tag_is_not_retried_after_its_backoff_when_the_listing_changed(
+    world: World,
+) -> None:
+    _quarantine(world, last_alert=NOW)  # next_retry is a day in the past
+    world.feeds[A.repo] = _listing(_release(A, "v1.0.0"), etag='"listing-2"')
+    report = world.run(A)
+    assert world.list_calls == [("a-php", ETAG)]  # a changed listing is returned, not a 304
+    assert world.verify_calls == []
+    assert report.events == ()
+    assert world.state(A.repo).failed["v1.0.0"].quarantined
+
+
+def test_an_asset_without_a_sha256_digest_stops_the_stage_and_admits_nothing(
+    world: World,
+) -> None:
+    release = _release(A, "v1.0.0")
+    odd = tuple(dataclasses.replace(a, digest="md5:" + "0" * 32) for a in release.assets)
+    world.feeds[A.repo] = _listing(dataclasses.replace(release, assets=odd))
+    report = world.run(A)
+    assert report.stopped is not None and "no usable digest" in report.stopped
+    assert "v1.0.0" not in world.state(A.repo).admitted

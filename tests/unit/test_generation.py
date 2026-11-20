@@ -130,10 +130,32 @@ def site(tmp_path: Path) -> Site:
 _counter = itertools.count()
 
 
-def _install(site: Site, tree: Path, entries: list[Entry], now: float) -> str:
+def _installed(site: Site, tree: Path, entries: list[Entry], now: float) -> generation.Installed:
     copy = site.root.parent / f"copy-{next(_counter)}"
     shutil.copytree(tree, copy, symlinks=True)
-    return generation.install(site, copy, entries, now=now).generation
+    return generation.install(site, copy, entries, now=now)
+
+
+def _install(site: Site, tree: Path, entries: list[Entry], now: float) -> str:
+    return _installed(site, tree, entries, now).generation
+
+
+def _old_only_files(site: Site, world: World, tmp_path: Path, now: float) -> tuple[str, list[str]]:
+    """Install tree A, and name the stored files only the clients of its index still ask for."""
+    first = _install(site, world.tree_a, world.entries_a, now)
+    other_root = tmp_path / "other"
+    other_root.mkdir(mode=0o755)
+    other = generation.open_site(other_root)
+    _install(other, world.tree_b, world.entries_b, now)
+    names = sorted(_stored(site) - _stored(other))
+    assert names, "the old index must have files the new one lacks"
+    return first, names
+
+
+def _holds_its_name(path: Path, relative: str) -> bool:
+    promised = generation._expected_digest(relative)
+    assert promised is not None
+    return generation._file_digest(path, promised[0]) == promised[1]
 
 
 def _clients_fetch(root: Path) -> set[str]:
@@ -435,28 +457,185 @@ def test_a_manifest_of_a_generation_that_never_went_live_is_removed(
     assert not orphan.exists()
 
 
-def test_a_tree_that_would_hide_an_older_hash_is_refused_before_the_flip(
+def test_a_tree_that_would_hide_an_older_hash_is_completed_from_the_older_tree(
     site: Site, world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     now = time.time()
     first = _install(site, world.tree_a, world.entries_a, now)
+    wanted = _clients_fetch(site.versions / first)
     monkeypatch.setattr(
         generation, "_plan_store", lambda *a, **k: generation._Plan(carry=set(), drop=set())
     )
-    with pytest.raises(GenerationError, match="would disappear"):
-        _install(site, world.tree_b, world.entries_b, now + 60)
-    assert _current_id(site) == first
+    done = _installed(site, world.tree_b, world.entries_b, now + 60)
+    assert _current_id(site) == done.generation
+    assert done.repaired
+    for relative in wanted:
+        assert (site.current / relative).is_file()
 
 
-def test_a_stored_file_that_does_not_match_its_name_is_refused(site: Site, world: World) -> None:
+def test_a_missing_store_file_is_restored_from_an_older_tree(
+    site: Site, world: World, tmp_path: Path
+) -> None:
     now = time.time()
-    first = _install(site, world.tree_a, world.entries_a, now)
-    victim = sorted(p for p in site.store.rglob("*") if p.is_file() and "primary" in p.name)[0]
+    first, names = _old_only_files(site, world, tmp_path, now)
+    (site.store / names[0]).unlink()  # the older tree keeps its own link
+    done = _installed(site, world.tree_b, world.entries_b, now + 60)
+    assert _current_id(site) == done.generation
+    assert names[0] in done.repaired
+    assert _holds_its_name(site.store / names[0], names[0])
+    assert _holds_its_name(site.current / names[0], names[0])
+    assert (site.versions / first / names[0]).is_file()
+
+
+def test_a_failed_clean_up_after_the_flip_still_reports_what_was_restored(
+    site: Site, world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = time.time()
+    _, names = _old_only_files(site, world, tmp_path, now)
+    (site.store / names[0]).unlink()
+
+    def failing(*args: object, **kwargs: object) -> None:
+        raise GenerationError("cannot retire old generations")
+
+    monkeypatch.setattr(generation, "_retire", failing)
+    done = _installed(site, world.tree_b, world.entries_b, now + 60)
+    assert done.retire_error is not None
+    assert names[0] in done.repaired
+
+
+def test_a_damaged_stored_file_is_replaced_from_an_older_tree(
+    site: Site, world: World, tmp_path: Path
+) -> None:
+    now = time.time()
+    _, names = _old_only_files(site, world, tmp_path, now)
+    victim = site.store / names[0]
+    victim.unlink()  # breaks the hard link, so the older tree itself stays intact
+    victim.write_bytes(b"not what its name promises")
+    done = _installed(site, world.tree_b, world.entries_b, now + 60)
+    assert names[0] in done.repaired
+    assert _holds_its_name(victim, names[0])
+    assert _holds_its_name(site.current / names[0], names[0])
+
+
+def test_a_stored_file_that_differs_from_the_fresh_copy_is_replaced(
+    site: Site, world: World, tmp_path: Path
+) -> None:
+    now = time.time()
+    _install(site, world.tree_a, world.entries_a, now)
+    other_root = tmp_path / "other"
+    other_root.mkdir(mode=0o755)
+    other = generation.open_site(other_root)
+    _install(other, world.tree_b, world.entries_b, now)
+    shared = sorted(p for p in _stored(site) & _stored(other) if "primary" in p)
+    assert shared, "both generations must hold a file of this name"
+    victim = site.store / shared[0]
     victim.unlink()
     victim.write_bytes(b"not the index")
-    shutil.rmtree(site.versions / first / "rpm")
-    with pytest.raises(GenerationError, match=r"exists with other content|does not match its name"):
-        _install(site, world.tree_b, world.entries_b, now + 60)
+    done = _installed(site, world.tree_b, world.entries_b, now + 60)
+    assert shared[0] in done.repaired
+    assert _holds_its_name(victim, shared[0])
+
+
+def test_a_live_file_that_no_tree_has_is_left_out_and_reported(
+    site: Site, world: World, tmp_path: Path
+) -> None:
+    now = time.time()
+    first, names = _old_only_files(site, world, tmp_path, now)
+    (site.store / names[0]).unlink()
+    (site.versions / first / names[0]).unlink()
+    done = _installed(site, world.tree_b, world.entries_b, now + 60)
+    assert _current_id(site) == done.generation
+    assert names[0] in done.lost
+    assert names[0] not in done.repaired
+    assert not (site.current / names[0]).exists()
+
+
+def test_an_older_tree_entry_that_is_a_link_is_not_a_source(
+    site: Site, world: World, tmp_path: Path
+) -> None:
+    now = time.time()
+    first, names = _old_only_files(site, world, tmp_path, now)
+    good = tmp_path / "good-copy"
+    good.write_bytes((site.store / names[0]).read_bytes())  # right bytes, but outside the trees
+    (site.store / names[0]).unlink()
+    (site.versions / first / names[0]).unlink()
+    (site.versions / first / names[0]).symlink_to(good)
+    done = _installed(site, world.tree_b, world.entries_b, now + 60)
+    assert names[0] in done.lost
+    assert not (site.current / names[0]).exists()
+
+
+def test_a_file_damaged_in_every_copy_is_left_out_and_reported(
+    site: Site, world: World, tmp_path: Path
+) -> None:
+    now = time.time()
+    _, names = _old_only_files(site, world, tmp_path, now)
+    (site.store / names[0]).write_bytes(b"damaged in place")  # the older tree shares the inode
+    done = _installed(site, world.tree_b, world.entries_b, now + 60)
+    assert _current_id(site) == done.generation
+    assert names[0] in done.lost
+    assert not (site.store / names[0]).exists()
+    assert not (site.current / names[0]).exists()
+
+
+def test_a_damaged_file_that_only_its_age_keeps_is_dropped_not_refused(
+    site: Site, world: World, tmp_path: Path
+) -> None:
+    now = time.time()
+    first, names = _old_only_files(site, world, tmp_path, now)
+    for step in (60, 120, 180):
+        _install(site, world.tree_b, world.entries_b, now + step)
+    assert not (site.versions / first).exists(), "no kept index lists the old file any more"
+    victim = site.store / names[0]
+    assert victim.is_file(), "it is still within its seven days of grace"
+    victim.write_bytes(b"damaged in place")
+    done = _installed(site, world.tree_b, world.entries_b, now + 240)
+    assert _current_id(site) == done.generation
+    assert not victim.exists()
+    assert names[0] not in done.repaired
+
+
+@pytest.mark.parametrize("damage", ["missing", "damaged"])
+def test_the_directories_of_a_restored_store_file_are_flushed(
+    site: Site, world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    now = time.time()
+    _, names = _old_only_files(site, world, tmp_path, now)
+    (site.store / names[0]).unlink()
+    if damage == "damaged":
+        (site.store / names[0]).write_bytes(b"not what its name promises")
+    flushed: list[Path] = []
+    real = files.sync_directory
+
+    def record(path: Path) -> None:
+        flushed.append(path)
+        real(path)
+
+    monkeypatch.setattr(files, "sync_directory", record)
+    # only the store link of the restored file is new: the fresh build's files are already linked
+    monkeypatch.setattr(generation, "_hashed_files", lambda root: {})
+    done = _installed(site, world.tree_b, world.entries_b, now + 60)
+    assert names[0] in done.repaired
+    assert (site.store / names[0]).parent in flushed
+    assert site.store in flushed
+
+
+def test_the_store_directories_that_got_a_link_are_flushed(
+    site: Site, world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flushed: list[Path] = []
+    real = files.sync_directory
+
+    def record(path: Path) -> None:
+        flushed.append(path)
+        real(path)
+
+    monkeypatch.setattr(files, "sync_directory", record)
+    _install(site, world.tree_a, world.entries_a, time.time())
+    directories = [site.store, *(p for p in site.store.rglob("*") if p.is_dir())]
+    assert len(directories) > 1
+    for directory in directories:
+        assert directory in flushed
 
 
 def test_a_tree_without_signatures_is_refused(site: Site, world: World, tmp_path: Path) -> None:
@@ -533,6 +712,17 @@ def test_a_manifest_with_a_repeated_key_is_refused(site: Site, world: World) -> 
     forged = text.replace('"created": ', '"id": "x", "created": ', 1)
     assert forged != text
     path.write_text(forged, encoding="utf-8")
+    with pytest.raises(GenerationError, match="not valid"):
+        generation.read_manifest(site, identifier)
+
+
+def test_a_manifest_nested_deeper_than_the_parser_allows_is_refused(
+    site: Site, world: World
+) -> None:
+    identifier = _install(site, world.tree_a, world.entries_a, time.time())
+    deep = b"[" * 30000 + b"]" * 30000
+    assert len(deep) < generation.MAX_MANIFEST_BYTES
+    (site.manifests / f"{identifier}.json").write_bytes(deep)
     with pytest.raises(GenerationError, match="not valid"):
         generation.read_manifest(site, identifier)
 
@@ -642,6 +832,80 @@ def test_a_changed_content_set_is_published_at_once(pipeline: Pipeline, world: W
     second = pipeline.publish(world.entries_b, now + 60)
     assert second.generation is not None
     assert second.generation != first.generation
+
+
+def _forget_the_stored_hash_files(site: Site) -> set[str]:
+    stored = {p for p in site.store.rglob("*") if p.is_file() and "by-hash" in p.as_posix()}
+    assert stored
+    for path in stored:
+        path.unlink()  # the trees keep their own links
+    return {p.relative_to(site.store).as_posix() for p in stored}
+
+
+def test_publish_reports_the_stored_files_it_restored(pipeline: Pipeline, world: World) -> None:
+    now = time.time()
+    first = pipeline.publish(world.entries_a, now)
+    assert first.generation is not None
+    forgotten = _forget_the_stored_hash_files(pipeline.site)
+    result = pipeline.publish(world.entries_b, now + 60)
+    assert result.generation is not None
+    # only what the first index lists and the new one does not needs restoring: the rest is rebuilt
+    only_for_old_clients = generation._live_paths(pipeline.site.versions / first.generation)
+    only_for_old_clients -= generation._live_paths(pipeline.site.current)
+    assert only_for_old_clients & forgotten
+    assert set(result.repaired) == only_for_old_clients & forgotten
+    for relative in result.repaired:
+        assert _holds_its_name(pipeline.site.store / relative, relative)
+
+
+def test_a_rollback_reports_the_stored_files_it_restored(pipeline: Pipeline, world: World) -> None:
+    now = time.time()
+    first = pipeline.publish(world.entries_a, now)
+    pipeline.publish(world.entries_b, now + 60)
+    _forget_the_stored_hash_files(pipeline.site)
+    assert first.generation is not None
+    result = pipeline.rollback(first.generation, now + 120)
+    assert result.pinned
+    assert result.repaired
+
+
+def _vanish(site: Site, tree: Path, relative: str) -> None:
+    """Remove a hash-named file from the store and from one tree: no copy is left."""
+    (site.store / relative).unlink()
+    (tree / relative).unlink()
+
+
+def test_publish_reports_the_files_no_tree_has(pipeline: Pipeline, world: World) -> None:
+    now = time.time()
+    first = pipeline.publish(world.entries_a, now)
+    assert first.generation is not None
+    second = pipeline.publish(world.entries_b, now + 60)
+    assert second.generation is not None
+    site = pipeline.site
+    only_for_old_clients = generation._live_paths(site.versions / first.generation)
+    only_for_old_clients -= generation._live_paths(site.current)
+    victim = sorted(only_for_old_clients & _stored(site))[0]
+    _vanish(site, site.versions / first.generation, victim)
+    (site.versions / second.generation / victim).unlink()  # the second tree carried it too
+    result = pipeline.publish(world.entries_b, now + DAY + 120)  # re-signed after a day
+    assert result.generation is not None
+    assert result.lost == (victim,)
+    assert not (site.current / victim).exists()
+
+
+def test_a_rollback_reports_the_files_no_tree_has(pipeline: Pipeline, world: World) -> None:
+    now = time.time()
+    first = pipeline.publish(world.entries_a, now)
+    second = pipeline.publish(world.entries_b, now + 60)
+    assert first.generation is not None
+    assert second.generation is not None
+    site = pipeline.site
+    only_in_second = generation._live_paths(site.versions / second.generation)
+    only_in_second -= generation._live_paths(site.versions / first.generation)
+    victim = sorted(only_in_second & _stored(site))[0]
+    _vanish(site, site.versions / second.generation, victim)
+    result = pipeline.rollback(first.generation, now + 120)
+    assert result.lost == (victim,)
 
 
 def test_staging_is_empty_after_a_failed_build(
@@ -847,6 +1111,40 @@ def test_leftovers_of_a_crashed_run_are_all_cleaned_up(site: Site, world: World)
     assert generation.generations(site) == [first, second]
 
 
+@pytest.mark.parametrize("where", ["manifests", "root"])
+def test_temporary_files_of_a_crashed_write_are_swept_from_the_manifests_and_the_root(
+    site: Site, world: World, where: str
+) -> None:
+    now = time.time()
+    _install(site, world.tree_a, world.entries_a, now)
+    directory = site.manifests if where == "manifests" else site.root
+    old = directory / f"{files.TEMPORARY_PREFIX}abc123"
+    old.write_text("half a manifest", encoding="utf-8")
+    os.utime(old, (now - 30 * DAY, now - 30 * DAY))
+    fresh = directory / f"{files.TEMPORARY_PREFIX}fresh"
+    fresh.write_text("written a moment ago", encoding="utf-8")
+    keep = directory / "keep-me.txt"
+    keep.write_text("not ours", encoding="utf-8")
+    _install(site, world.tree_a, world.entries_a, now + 60)
+    assert not old.exists()
+    assert not fresh.exists()
+    assert keep.read_text(encoding="utf-8") == "not ours"
+
+
+@pytest.mark.parametrize("where", ["manifests", "root"])
+def test_a_temporary_directory_does_not_stop_a_publish(
+    site: Site, world: World, where: str
+) -> None:
+    now = time.time()
+    _install(site, world.tree_a, world.entries_a, now)
+    directory = site.manifests if where == "manifests" else site.root
+    odd = directory / f"{files.TEMPORARY_PREFIX}dir"
+    (odd / "inner").mkdir(parents=True)
+    second = _install(site, world.tree_a, world.entries_a, now + 60)
+    assert _current_id(site) == second
+    assert odd.is_dir()
+
+
 def test_a_missing_current_with_several_generations_is_not_silently_wiped(
     site: Site, world: World
 ) -> None:
@@ -1037,3 +1335,33 @@ def test_a_restrictive_umask_does_not_hide_the_served_tree(world: World, tmp_pat
                 hidden.append(f"{path.relative_to(root)} {oct(stat.S_IMODE(mode))}")
     assert hidden == [], "\n".join(hidden)
     assert (site.root / "current").is_symlink()
+
+
+def test_a_package_inside_the_tree_is_refused(site: Site, world: World, tmp_path: Path) -> None:
+    copy = tmp_path / "leaky"
+    shutil.copytree(world.tree_a, copy, symlinks=True)
+    (copy / "dists/stable/php8.3-p_1.0.0_amd64.deb").write_bytes(b"package bytes")
+    with pytest.raises(GenerationError, match="a package or a link in the tree"):
+        generation.install(site, copy, world.entries_a, now=time.time())
+    assert not site.current.exists()
+
+
+def test_current_pointing_to_a_generation_that_does_not_exist_is_refused(
+    site: Site, world: World
+) -> None:
+    site.current.symlink_to("versions/00000007-20260101T000000Z")
+    with pytest.raises(GenerationError, match="does not exist"):
+        _install(site, world.tree_a, world.entries_a, time.time())
+
+
+def test_a_damaged_stored_file_is_not_carried_when_the_older_tree_copy_is_damaged_too(
+    site: Site, world: World, tmp_path: Path
+) -> None:
+    now = time.time()
+    first, names = _old_only_files(site, world, tmp_path, now)
+    for copy in (site.store / names[0], site.versions / first / names[0]):
+        copy.unlink()  # separate files, so each holds its own wrong bytes
+        copy.write_bytes(b"not what its name promises")
+    done = _installed(site, world.tree_b, world.entries_b, now + 60)
+    assert _current_id(site) != first
+    assert names[0] in done.lost

@@ -4,9 +4,9 @@ One signed repository serves every extension: after the steps below, `apt instal
 `dnf install` works for each of them, and normal upgrades keep them current.
 
 Supported and tested: Ubuntu 22.04, 24.04 and 26.04, Debian 12 (bookworm) and 13 (trixie),
-AlmaLinux 8, 9 and 10, and Fedora 44, on `amd64`/`arm64` (apt) and `x86_64`/`aarch64` (dnf).
-Other apt and dnf distributions are untested. cPanel, EasyApache and CloudLinux are not supported
-yet.
+AlmaLinux 8, 9 and 10, and Fedora 44, on `amd64` (apt) and `x86_64` (dnf). The repository also
+accepts `arm64` and `aarch64` clients, but nothing tests them yet. Other apt and dnf
+distributions are untested. cPanel, EasyApache and CloudLinux are not supported yet.
 
 Every command block marked `family=apt` or `family=dnf` below is run, in that order, on a real
 `apt` or `dnf` of each tested distribution by `tests/container/test_docs.py`, against a local
@@ -28,6 +28,27 @@ The fingerprint to compare with:
 The primary key and the signing subkey that signs the repository are both listed; the primary
 key is the one to compare. A key that differs from the published one means: stop, delete what you
 downloaded, and report it (see `.github/SECURITY.md`).
+
+The steps below are the manual flow. The script `setup.sh` of the project repository does the
+same in one step, as root, for apt and dnf: it downloads the keyring package, reads the key out of
+it and prints its fingerprint and expiry before it installs anything, then installs the package,
+writes the repository file and refreshes the indexes. Give it the published fingerprint and it
+stops, before the keyring package is installed, imported or written, when the key in the package
+is another (a missing gpg is installed from your distribution first, to read the key):
+
+```sh
+sh setup.sh --fingerprint <fingerprint published with the key ceremony>
+```
+
+Without the option the key is installed whatever it is, so compare the printed fingerprint with
+the published one. If a step fails the script puts back the repository file and takes out the key
+it imported; the keyring package stays installed.
+
+Running the script again is safe. On dnf it turns on the section of each PHP version it finds
+installed (the system's or Remi's) and never turns one off. A section you turned off by hand with
+`enabled=0` in the repository file is therefore turned on again while that PHP is installed. A
+setting made with dnf 5's `dnf config-manager setopt` is kept in an override file, which a run
+respects. With dnf 4, turn the section off again after a re-run.
 
 ## Debian and Ubuntu (apt)
 
@@ -163,9 +184,17 @@ apt-get remove -y --purge rabib-archive-keyring
 rm /etc/apt/sources.list.d/rabib.sources
 ```
 
+Removing the keyring package does not take the key out of rpm's key store, so the dnf block ends
+by removing it. rpm names a key after the end of its fingerprint (all of it on Fedora 44), and
+the block finds it by that.
+
 ```sh {family=dnf phase=remove}
+fingerprint=$(gpg --show-keys --with-colons /etc/pki/rpm-gpg/RPM-GPG-KEY-rabib | grep -m1 '^fpr' | cut -d: -f10 | tr A-F a-f)
 dnf remove -y rabib-release
 rm /etc/yum.repos.d/rabib.repo
+for version in $(rpm -qa gpg-pubkey --qf '%{VERSION} '); do
+  case $fingerprint in *"$version") rpm -e "gpg-pubkey-$version" ;; esac
+done
 ```
 
 ## Limits worth knowing

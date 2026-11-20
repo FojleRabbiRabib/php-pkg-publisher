@@ -183,6 +183,30 @@ def test_a_refresh_that_writes_invalid_json_keeps_the_good_copy(setup: Setup) ->
     assert good.read_bytes() == before
 
 
+def _nested(tmp_path: Path) -> Path:
+    """A file under the size limit that is nested deeper than the JSON parser allows."""
+    path = tmp_path / "deep.json"
+    path.write_bytes(b"[" * 30000 + b"]" * 30000)
+    assert path.stat().st_size < verify.MAX_SMALL_FILE_BYTES
+    return path
+
+
+def test_a_refresh_that_writes_a_deeply_nested_file_keeps_the_good_copy(
+    setup: Setup, tmp_path: Path
+) -> None:
+    good = setup.copy(age=DAY)
+    before = good.read_bytes()
+    root = setup.obtain(MAKE_TARGET_DIRECTORY + f'cp {_nested(tmp_path)} "{TARGET}"\n')
+    assert root.refreshed is False
+    assert good.read_bytes() == before
+
+
+def test_a_deeply_nested_copy_stops_the_run_without_a_crash(setup: Setup, tmp_path: Path) -> None:
+    setup.copy(age=DAY, content=_nested(tmp_path).read_bytes())
+    with pytest.raises(ToolError, match="cannot be read"):
+        setup.obtain("exit 1\n")
+
+
 def test_a_hanging_refresh_falls_back(setup: Setup, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(verify, "INITIALIZE_TIMEOUT_SECONDS", 0.3)
     setup.copy(age=DAY)
@@ -225,3 +249,12 @@ def test_a_temporary_file_of_a_killed_run_is_removed_when_old_enough(setup: Setu
     setup.obtain(COPY_FIXTURE)
     assert not old.exists()
     assert recent.exists()
+
+
+def test_a_refresh_that_exits_non_zero_is_a_failed_refresh_even_if_it_left_a_valid_file(
+    setup: Setup,
+) -> None:
+    setup.copy(age=3 * DAY)
+    root = setup.obtain(COPY_FIXTURE + "exit 1\n")
+    assert root.refreshed is False
+    assert root.age_seconds == 3 * DAY

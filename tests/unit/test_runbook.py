@@ -13,12 +13,15 @@ from typing import Final
 
 import platform_watch
 
-from publisher import admit, config, generation, signer, watch
+from publisher import admit, config, generation, metadata, signer, watch
 from publisher.__main__ import _parser
 from publisher.settings import DIRECTORIES, load_settings
 
 ROOT: Final = Path(__file__).resolve().parents[2]
 TEXT: Final = (ROOT / "docs" / "runbook.md").read_text(encoding="utf-8")
+SECURITY: Final = (ROOT / "docs" / "security.md").read_text(encoding="utf-8")
+FLAT: Final = " ".join(TEXT.split())
+SECURITY_FLAT: Final = " ".join(SECURITY.split())
 UNITS: Final = ROOT / "deploy" / "systemd"
 PUBLIC_ADDRESS: Final = "93.184.216.34"
 
@@ -135,6 +138,79 @@ def test_the_site_layout_the_rollback_and_rotation_steps_describe_is_the_codes(
     assert "/etc/php-pkg-publisher-webhook/secret" in (ROOT / "web/hooks/sync.php").read_text(
         encoding="utf-8"
     )
+
+
+def test_the_stored_file_section_quotes_what_the_code_says() -> None:
+    source = (ROOT / "publisher" / "generation.py").read_text(encoding="utf-8")
+    assert "lost" in source
+    runner = (ROOT / "publisher" / "run.py").read_text(encoding="utf-8")
+    for kind in ("store-repaired", "store-lost"):
+        assert f'kind="{kind}"' in runner
+        assert f"`{kind}` alert" in TEXT
+    assert generation.KEEP_TREES == 3
+    assert generation.LIVE_GENERATIONS == 3
+    assert "one of the last three generations" in TEXT
+
+
+def test_the_receiver_reasons_the_runbook_lists_are_the_codes() -> None:
+    source = (ROOT / "web" / "hooks" / "sync.php").read_text(encoding="utf-8")
+    reasons = re.findall(r"fail\('([a-z-]+)'\)", source)
+    assert sorted(reasons) == [
+        "guid-directory-unusable",
+        "nudge-directory-missing",
+        "nudge-failed",
+        "secret-unusable",
+    ]
+    for reason in (*reasons, "internal-error"):
+        assert f"`{reason}`" in TEXT
+    assert "pkg-hook: " in source
+    assert "`pkg-hook:`" in TEXT
+
+
+def test_the_rotation_margin_is_beyond_the_last_day_the_signer_accepts() -> None:
+    last_day = metadata.VALID_SECONDS / 86400
+    (in_runbook,) = re.findall(r"at least (\d+) days before the old subkey expires", FLAT)
+    (in_security,) = re.findall(
+        r"shipped and at least (\d+) days before the old one expires", SECURITY_FLAT
+    )
+    assert in_runbook == in_security
+    assert int(in_runbook) > last_day
+    assert f"expires within {last_day:.0f} days of a run" in FLAT
+    assert f"{last_day:.0f} days or fewer left cannot be used" in SECURITY_FLAT
+
+
+def test_the_unit_section_quotes_what_the_units_and_the_code_say() -> None:
+    service = (UNITS / "php-pkg-publisher.service").read_text(encoding="utf-8")
+    assert "SuccessExitStatus=143" in service
+    assert "| 143 |" in TEXT
+    assert "StartLimitBurst=5" in service
+    assert "StartLimitIntervalSec=600" in service
+    assert "allows five starts within ten minutes and refuses the sixth" in FLAT
+    for command in re.findall(r"^systemctl [a-z-]+(?: --now)? ([\w. -]+)$", TEXT, re.MULTILINE):
+        for name in command.split():
+            assert (UNITS / name).is_file(), name
+    assert "systemctl enable --now php-pkg-publisher.path" in TEXT
+    assert watch.NUDGE_STALE_HOURS == 2
+    assert "or the nudge file is older than 2 hours (no run lasts that long" in FLAT
+    assert "`nudge-stale` when the nudge file is older than 2 hours" in FLAT
+    assert "disable --now php-pkg-publisher-watch.timer" in FLAT
+    assert "also ends the run with 143" in FLAT
+    assert "alerting each time" in service
+    assert 'kind="nudge-stale"' in (ROOT / "publisher" / "watch.py").read_text(encoding="utf-8")
+    lock_source = (ROOT / "publisher" / "lock.py").read_text(encoding="utf-8")
+    assert 'f"{path.name}.rejected-' in lock_source
+    assert "`sync.rejected-` and a number" in FLAT
+
+
+def test_the_throttle_note_quotes_the_receivers_numbers_and_header() -> None:
+    source = (ROOT / "web" / "hooks" / "sync.php").read_text(encoding="utf-8")
+    (limit,) = re.findall(r"const THROTTLE_LIMIT = (\d+);", source)
+    (window,) = re.findall(r"const THROTTLE_WINDOW = (\d+);", source)
+    assert f"{limit} requests in {window} seconds" in SECURITY_FLAT
+    assert "HTTP_CF_CONNECTING_IP" in source
+    assert "`CF-Connecting-IP`" in SECURITY_FLAT
+    assert "origin must therefore accept connections from Cloudflare only" in SECURITY_FLAT
+    assert "answer GitHub's real deliveries with 429" in SECURITY_FLAT
 
 
 def test_the_numbers_quoted_are_the_codes() -> None:

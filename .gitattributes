@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Fojle Rabbi (Rabib)
 # Normalize every text file to LF in the repository and the working tree.
 * text=auto eol=lf
 

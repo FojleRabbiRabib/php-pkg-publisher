@@ -128,15 +128,32 @@ class RunLock:
             os.close(descriptor)
 
 
-def take_nudge(path: Path) -> bool:
-    """Consume the nudge file; True when it was there."""
+def take_nudge(path: Path, *, log: Callable[[str], None]) -> bool:
+    """Consume the nudge file; True when a nudge was there.
+
+    The web server's group may create entries in the nudge directory, so the nudge can be a
+    directory. It is set aside under another name (it is still a request for a run, so True):
+    leaving it would keep the path unit starting the service, and failing on it would stop
+    every run.
+    """
     try:
         path.unlink()
     except FileNotFoundError:
         return False
+    except IsADirectoryError:
+        _set_aside(path, log)
     except OSError as error:
         raise LockError(f"{path}: cannot consume the nudge: {error.strerror or error}") from error
     return True
+
+
+def _set_aside(path: Path, log: Callable[[str], None]) -> None:
+    target = path.with_name(f"{path.name}.rejected-{time.time_ns()}")
+    try:
+        path.rename(target)
+    except OSError as error:
+        raise LockError(f"{path}: cannot set the nudge aside: {error.strerror or error}") from error
+    log(f"error: the nudge was a directory; set aside as {target.name}")
 
 
 def _pending(path: Path) -> bool:
@@ -150,18 +167,25 @@ def _pending(path: Path) -> bool:
 
 
 def run_passes(
-    lock: RunLock, nudge: Path, one_pass: Callable[[], T], *, max_passes: int = MAX_PASSES
+    lock: RunLock,
+    nudge: Path,
+    one_pass: Callable[[], T],
+    *,
+    log: Callable[[str], None],
+    max_passes: int = MAX_PASSES,
 ) -> list[T]:
     """Run `one_pass` at least once, and again while a new nudge arrived during the last pass.
 
     The cap keeps a flood of nudges from holding the lock for ever; a nudge still waiting when
-    the cap is reached stays in place for the next triggered run. A pass that raises puts back
-    the nudge it consumed, so the request that started the run is not lost.
+    the cap is reached stays in place for the next triggered run. A pass that raises, or a
+    process that is told to stop (the command turns SIGTERM into `SystemExit`), puts back the
+    nudge it consumed, so the request that started the run is not lost. A pass that returns,
+    also one that reports a failure, has handled its request and does not.
     """
     lock.require_held()
     results: list[T] = []
     for _ in range(max_passes):
-        consumed = take_nudge(nudge)
+        consumed = take_nudge(nudge, log=log)
         try:
             results.append(one_pass())
         except BaseException:

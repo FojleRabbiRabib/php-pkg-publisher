@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import json
@@ -46,6 +47,10 @@ class World:
         return self.nudge_dir / "sync"
 
     def post(self, **changes: Any) -> int:
+        return self.answer(**changes)[0]
+
+    def answer(self, **changes: Any) -> tuple[int, list[str]]:
+        """The status and the reason codes the receiver reported for one request."""
         body = changes.get("body", BODY)
         case: dict[str, Any] = {
             "nudge_dir": str(self.nudge_dir),
@@ -70,7 +75,8 @@ class World:
             env={"PATH": os.environ["PATH"]},
         )
         assert out.stderr == ""
-        return int(out.stdout)
+        result = json.loads(out.stdout)
+        return int(result["status"]), list(result["reasons"])
 
 
 @pytest.fixture
@@ -307,6 +313,69 @@ def test_a_nudge_that_is_a_link_is_not_success(world: World) -> None:
     assert not (world.nudge_dir / "elsewhere").exists()  # nothing was created through the link
 
 
+def test_a_missing_nudge_directory_reports_its_reason(tmp_path: Path) -> None:
+    world = World(tmp_path)
+    world.nudge_dir.rmdir()
+    assert world.answer() == (500, ["nudge-directory-missing"])
+
+
+@pytest.mark.parametrize("content", [None, "", "short\n"])
+def test_an_unusable_secret_reports_its_reason(world: World, content: str | None) -> None:
+    if content is None:
+        world.secret_file.unlink()
+    else:
+        world.secret_file.write_text(content, encoding="utf-8")
+    assert world.answer() == (500, ["secret-unusable"])
+
+
+@pytest.mark.parametrize("blocker", ["directory", "link"])
+def test_a_nudge_that_cannot_be_made_reports_its_reason(world: World, blocker: str) -> None:
+    if blocker == "directory":
+        world.nudge.mkdir()
+    else:
+        world.nudge.symlink_to(world.nudge_dir / "elsewhere")
+    assert world.answer() == (500, ["nudge-failed"])
+
+
+def test_a_nudge_taken_by_the_publisher_mid_delivery_is_made_again(world: World) -> None:
+    # The create fails as if the nudge existed, then the nudge is gone: the receiver must not 500.
+    assert world.answer(fail_creates=1) == (202, [])
+    assert world.nudge.is_file()
+
+
+def test_a_second_failed_create_with_no_nudge_is_a_real_fault(world: World) -> None:
+    assert world.answer(fail_creates=2) == (500, ["nudge-failed"])
+    assert not world.nudge.exists()
+
+
+def test_a_guid_table_that_cannot_be_made_reports_its_reason(world: World) -> None:
+    (world.nudge_dir / "guid").write_text("in the way", encoding="utf-8")
+    assert world.answer() == (500, ["guid-directory-unusable"])
+
+
+@pytest.mark.parametrize(
+    ("changes", "status"),
+    [
+        ({}, 202),
+        ({"method": "GET"}, 405),
+        ({"signature": "sha256=" + "0" * 64}, 401),
+        ({"event": "ping"}, 200),
+        ({"content_length": "99999999"}, 413),
+        ({"delivery": "short"}, 400),
+    ],
+)
+def test_an_answer_that_is_not_a_500_reports_nothing(
+    world: World, changes: dict[str, Any], status: int
+) -> None:
+    assert world.answer(**changes) == (status, [])
+
+
+def test_whatever_the_handler_throws_is_a_500_that_names_only_the_class(world: World) -> None:
+    status, reasons = world.answer(read_error=True)
+    assert (status, reasons) == (500, ["internal-error RuntimeException"])
+    assert not world.nudge.exists()
+
+
 # --- the real file behind the PHP built-in server ----------------------------------------------
 
 
@@ -316,35 +385,64 @@ def _free_port() -> int:
         return int(probe.getsockname()[1])
 
 
-@pytest.fixture
-def server(tmp_path: Path) -> Iterator[tuple[str, World]]:
+@contextlib.contextmanager
+def _serving(
+    tmp_path: Path,
+    *,
+    file_literal: str | None = None,
+    php_options: tuple[str, ...] = (),
+    edits: tuple[tuple[str, str], ...] = (),
+) -> Iterator[tuple[str, World, Path]]:
+    """The real file behind PHP's built-in server; also the path of the file its stderr goes to.
+
+    `file_literal` replaces the PHP string literal that names the file holding the shared secret;
+    `edits` are (old, new) source replacements, for provoking what a test cannot reach otherwise.
+    """
     world = World(tmp_path)
     source = (ROOT / "web" / "hooks" / "sync.php").read_text(encoding="utf-8")
     patched = source.replace("/var/lib/php-pkg-publisher/nudge", str(world.nudge_dir)).replace(
-        "/etc/php-pkg-publisher-webhook/secret", str(world.secret_file)
+        "'/etc/php-pkg-publisher-webhook/secret'", file_literal or f"'{world.secret_file}'"
     )
     assert patched != source
+    for old, new in edits:
+        assert old in patched
+        patched = patched.replace(old, new, 1)
     docroot = tmp_path / "docroot"
     docroot.mkdir()
     (docroot / "sync.php").write_text(patched, encoding="utf-8")
+    log = tmp_path / "server.log"
     port = _free_port()
-    process = subprocess.Popen(  # noqa: S603
-        [str(shutil.which("php")), "-S", f"127.0.0.1:{port}", "-t", str(docroot)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env={"PATH": os.environ["PATH"]},
-    )
-    try:
-        for _ in range(100):
-            try:
-                socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
-                break
-            except OSError:
-                time.sleep(0.05)
-        yield f"http://127.0.0.1:{port}/sync.php", world
-    finally:
-        process.terminate()
-        process.wait(timeout=10)
+    with log.open("wb") as errors:
+        process = subprocess.Popen(  # noqa: S603
+            [
+                str(shutil.which("php")),
+                *php_options,
+                "-S",
+                f"127.0.0.1:{port}",
+                "-t",
+                str(docroot),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=errors,
+            env={"PATH": os.environ["PATH"]},
+        )
+        try:
+            for _ in range(100):
+                try:
+                    socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+                    break
+                except OSError:
+                    time.sleep(0.05)
+            yield f"http://127.0.0.1:{port}/sync.php", world, log
+        finally:
+            process.terminate()
+            process.wait(timeout=10)
+
+
+@pytest.fixture
+def server(tmp_path: Path) -> Iterator[tuple[str, World]]:
+    with _serving(tmp_path) as (url, world, _):
+        yield url, world
 
 
 def _send(
@@ -377,6 +475,46 @@ def test_a_real_delivery_is_202_with_an_empty_body_and_no_php_banner(
     assert world.nudge.is_file()
     assert "X-Powered-By" not in headers
     assert headers["Cache-Control"] == "no-store"
+
+
+def test_a_real_error_is_a_bare_500_and_the_log_names_only_the_class(tmp_path: Path) -> None:
+    # A path with a null byte makes PHP throw a ValueError that the code did not expect, and the
+    # server is started with display_errors on, as a careless host would have it.
+    with _serving(
+        tmp_path,
+        file_literal='"/nonexistent/secret\\0file"',
+        php_options=("-d", "display_errors=1", "-d", "log_errors=1"),
+    ) as (url, world, log):
+        status, headers, body = _send(url)
+    assert (status, body) == (500, b"")
+    assert headers["Cache-Control"] == "no-store"
+    text = log.read_text(encoding="utf-8")
+    assert "pkg-hook: internal-error ValueError" in text
+    assert "null bytes" not in text
+    assert "/nonexistent/secret" not in text
+    assert not world.nudge.exists()
+
+
+def test_a_php_warning_goes_to_the_log_and_never_to_the_client(tmp_path: Path) -> None:
+    # The host shows errors and does not log them; the file must turn both around.
+    warning = "header_remove('X-Powered-By'); trigger_error('WARNING-TEXT', E_USER_WARNING);"
+    with _serving(
+        tmp_path,
+        php_options=("-d", "display_errors=1", "-d", "log_errors=0"),
+        edits=(("header_remove('X-Powered-By');", warning),),
+    ) as (url, world, log):
+        status, _, body = _send(url)
+    assert (status, body) == (202, b"")
+    assert world.nudge.is_file()
+    assert "WARNING-TEXT" in log.read_text(encoding="utf-8")
+
+
+def test_a_real_500_writes_its_reason_code_to_the_error_log(tmp_path: Path) -> None:
+    with _serving(tmp_path, php_options=("-d", "log_errors=1")) as (url, world, log):
+        world.secret_file.unlink()
+        status, _, body = _send(url)
+    assert (status, body) == (500, b"")
+    assert "pkg-hook: secret-unusable" in log.read_text(encoding="utf-8")
 
 
 def test_a_real_get_is_405_and_names_post(server: tuple[str, World]) -> None:
@@ -453,3 +591,38 @@ def test_the_real_server_reads_only_the_declared_length(
     # the 10 bytes read match the signature and are not JSON: a signed bad payload, not a 413
     assert reply.startswith(b"HTTP/1.1 400")
     assert not world.nudge.exists()
+
+
+def test_a_repeat_in_other_letter_case_is_the_same_delivery(world: World) -> None:
+    # the default GUID is all digits, so it cannot show a difference in case
+    guid = "abcdef01-2222-3333-4444-5555555555ab"
+    assert world.post(delivery=guid) == 202
+    world.nudge.unlink()
+    assert world.post(delivery=guid.upper(), now=NOW + 5) == 200
+    assert not world.nudge.exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_the_duplicate_window_is_checked_even_when_the_sweep_could_not_remove_the_entry(
+    world: World,
+) -> None:
+    assert world.post() == 202
+    world.nudge.unlink()
+    guid_dir = world.nudge_dir / "guid"
+    guid_dir.chmod(0o555)  # unlink fails, so the stale entry stays
+    try:
+        assert world.post(now=NOW + 121) == 202
+        assert len(list(guid_dir.iterdir())) == 1
+    finally:
+        guid_dir.chmod(0o700)
+
+
+def test_a_signed_body_nested_deeper_than_sixteen_levels_is_400(world: World) -> None:
+    body = json.dumps({"action": "published", "x": json.loads("[" * 15 + "]" * 15)})  # 17 levels
+    assert world.post(body=body) == 400
+    assert not world.nudge.exists()
+
+
+def test_a_signed_body_nested_sixteen_levels_deep_is_accepted(world: World) -> None:
+    body = json.dumps({"action": "published", "x": json.loads("[" * 14 + "]" * 14)})  # 16 levels
+    assert world.post(body=body) == 202

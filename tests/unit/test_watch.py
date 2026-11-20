@@ -22,11 +22,13 @@ from servers import local_server, raw_server, reply
 
 from publisher import alert, watch
 from publisher.alert import Alert
+from publisher.settings import load_settings
 from publisher.watch import (
     Public,
     WatchError,
     certificate_alerts,
     certificate_expiry,
+    nudge_alerts,
     release_dates,
     served_alerts,
     token_alerts,
@@ -317,6 +319,65 @@ def test_a_refused_origin_connection_is_a_watch_error() -> None:
         certificate_expiry("pkg.example.org", "127.0.0.1", port=1)
 
 
+# --- the nudge -------------------------------------------------------------------------------
+
+
+def _nudge_aged(tmp_path: Path, hours: float) -> Path:
+    path = tmp_path / "sync"
+    path.write_bytes(b"")
+    os.utime(path, (NOW - hours * 3600, NOW - hours * 3600))
+    return path
+
+
+def test_no_nudge_is_quiet(tmp_path: Path) -> None:
+    assert nudge_alerts(tmp_path / "sync", NOW) == []
+
+
+def test_a_nudge_a_run_has_not_yet_taken_is_quiet(tmp_path: Path) -> None:
+    assert nudge_alerts(_nudge_aged(tmp_path, 1.9), NOW) == []
+
+
+def test_a_nudge_older_than_two_hours_alerts_once_a_day_and_urgently(tmp_path: Path) -> None:
+    (item,) = nudge_alerts(_nudge_aged(tmp_path, 2.0), NOW)
+    assert item.kind == "nudge-stale"
+    assert item.urgent
+    assert item.key == "nudge"
+    assert "waited 2 hours" in item.text
+    assert str(tmp_path) not in item.text
+
+
+def test_a_nudge_that_is_a_directory_ages_like_a_file(tmp_path: Path) -> None:
+    path = tmp_path / "sync"
+    path.mkdir()
+    os.utime(path, (NOW - 5 * 3600, NOW - 5 * 3600))
+    assert _kinds(nudge_alerts(path, NOW)) == ["nudge-stale"]
+
+
+def test_a_nudge_dated_in_the_future_is_quiet(tmp_path: Path) -> None:
+    assert nudge_alerts(_nudge_aged(tmp_path, -10), NOW) == []
+
+
+def test_a_nudge_that_cannot_be_examined_alerts(tmp_path: Path) -> None:
+    (tmp_path / "blocker").write_bytes(b"")
+    (item,) = nudge_alerts(tmp_path / "blocker" / "sync", NOW)  # a file where a directory belongs
+    assert item.kind == "nudge-unreadable"
+    assert item.urgent
+    assert item.key == "nudge"
+    assert str(tmp_path) not in item.text
+
+
+def test_the_check_includes_the_nudge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    now = time_now()
+    _patch_world(monkeypatch, _Sent(), cert_days=60, release=_release(now, now + 14 * DAY))
+    (tmp_path / "state").mkdir()
+    (tmp_path / "nudge").mkdir()
+    stale = tmp_path / "nudge" / "sync"
+    stale.write_bytes(b"")
+    os.utime(stale, (now - 3 * 3600, now - 3 * 3600))
+    settings = load_settings(_settings_file(tmp_path, "2099-01-01"))
+    assert _kinds(watch.check(settings, now)) == ["nudge-stale"]
+
+
 # --- the command -----------------------------------------------------------------------------
 
 
@@ -387,6 +448,24 @@ def test_a_failing_check_is_logged_sent_once_and_remembered(
     assert set(memory) == {"token-expiring", "origin-cert", "served-date", "valid-until"}
     assert watch.main(["--config", str(config)]) == 0
     assert len(sent.texts) == 1  # the same alerts are not repeated within a day
+
+
+def test_an_alert_that_could_not_be_delivered_exits_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class _Down:
+        def send(self, text: str, *, silent: bool) -> None:
+            raise alert.DeliveryError("down")
+
+    now = time_now()
+    _patch_world(monkeypatch, _Sent(), cert_days=5, release=_release(now, now + 14 * DAY))
+    monkeypatch.setattr(alert, "Telegram", lambda credentials: _Down())
+    config = _settings_file(tmp_path, "2099-01-01")
+    (tmp_path / "state").mkdir()
+    assert watch.main(["--config", str(config)]) == 1
+    err = capsys.readouterr().err
+    assert "undelivered alert [origin-certificate]" in err
+    assert "failed: alerts not delivered" in err
 
 
 def test_a_broken_settings_file_exits_one(

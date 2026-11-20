@@ -4,16 +4,21 @@
 
 It shares no schedule and no publish module with the daily run (it imports only the settings
 reader, the alert sender and the HTTP helpers), so a dead publisher cannot silence it. Every pass
-it checks four things and alerts, at most once a day for each, on:
+it checks five things and alerts, at most once a day for each, on:
 
 - the GitHub token: fewer than 30 days left (the date comes from `publisher.yml`);
 - the origin certificate: fewer than 21 days left, read by connecting to the origin address with
   the public name, so Cloudflare's own certificate is never the one that is checked;
 - the served `Date:` of `InRelease`: older than 3 days;
-- the served `Valid-Until:` of `InRelease`: fewer than 7 days left.
+- the served `Valid-Until:` of `InRelease`: fewer than 7 days left;
+- the nudge file: older than 2 hours, which no run outlasts (the service times out after one
+  hour), so the path unit is not starting runs (a start limit, a stopped unit).
 
-The served file is read only for these two dates. Its signature is not checked here: the clients
+The served file is read only for the two dates. Its signature is not checked here: the clients
 do that, and this is a freshness alarm.
+
+The command exits 1 when an alert could not be delivered (every alert is in the journal, and the
+next pass sends it again), so a dead chat service shows as a failed unit and not as a green one.
 """
 
 from __future__ import annotations
@@ -36,11 +41,13 @@ from publisher import alert, config, net
 from publisher.alert import Alert
 from publisher.settings import Settings, load_settings
 
+HOUR: Final = 3600.0
 DAY: Final = 86400.0
 TOKEN_WARNING_DAYS: Final = 30
 CERTIFICATE_WARNING_DAYS: Final = 21
 DATE_MAX_AGE_DAYS: Final = 3
 VALID_UNTIL_WARNING_DAYS: Final = 7
+NUDGE_STALE_HOURS: Final = 2
 FUTURE_SLACK_SECONDS: Final = 3600.0
 RELEASE_PATH: Final = "/apt/dists/stable/InRelease"
 RELEASE_DATE_FORMAT: Final = "%a, %d %b %Y %H:%M:%S UTC"
@@ -241,6 +248,22 @@ def served_alerts(fetch: Callable[[], bytes], now: float) -> list[Alert]:
     return alerts
 
 
+def nudge_alerts(nudge: Path, now: float) -> list[Alert]:
+    """A nudge that outlives any run means the path unit is not starting runs."""
+    try:
+        modified = nudge.lstat().st_mtime
+    except FileNotFoundError:
+        return []
+    except OSError:
+        text = "the nudge file cannot be read"
+        return [Alert(kind="nudge-unreadable", text=text, urgent=True, key="nudge")]
+    age = (now - modified) / HOUR
+    if age < NUDGE_STALE_HOURS:
+        return []
+    text = f"the nudge file has waited {age:.0f} hours: the path unit is not starting runs"
+    return [Alert(kind="nudge-stale", text=text, urgent=True, key="nudge")]
+
+
 def check(settings: Settings, now: float, *, public: Public | None = None) -> list[Alert]:
     """All checks of one pass, each independent of the others."""
     target = settings.watch
@@ -249,6 +272,7 @@ def check(settings: Settings, now: float, *, public: Public | None = None) -> li
         *token_alerts(settings.token_expires, now),
         *certificate_alerts(lambda: certificate_expiry(target.host, target.origin), now),
         *served_alerts(lambda: public.get(RELEASE_PATH), now),
+        *nudge_alerts(settings.nudge, now),
     ]
 
 
@@ -271,9 +295,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             settings.state / "watch-alerts.json",
             log=_stderr,
         )
-        dispatch(alerts, now)
+        delivered = dispatch(alerts, now)
     except (alert.AlertError, config.ConfigError, OSError) as error:
         _stderr(f"failed: {alert.clean(str(error))}")
+        return 1
+    if not delivered:
+        _stderr("failed: alerts not delivered")
         return 1
     return 0
 

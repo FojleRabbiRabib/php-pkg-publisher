@@ -112,7 +112,15 @@ class ProductState:
 
 
 EventKind = Literal[
-    "admitted", "failed", "quarantined", "quarantine-alert", "changed", "vanished", "product-error"
+    "admitted",
+    "failed",
+    "quarantined",
+    "quarantine-alert",
+    "changed",
+    "vanished",
+    "product-error",
+    "exclusion-unmatched",
+    "cell-missing",
 ]
 
 
@@ -353,6 +361,15 @@ class StateStore:
             raise _bad(path, f"cannot write: {error.strerror or error}") from error
 
 
+def recorded_products(directory: Path) -> list[str]:
+    """The products that have a state file in `directory`, the same directory a store is given."""
+    try:
+        names = sorted(path.name for path in (directory / PRODUCTS_DIRECTORY).iterdir())
+    except FileNotFoundError:
+        return []
+    return [name.removesuffix(".json") for name in names if name.endswith(".json")]
+
+
 def requeue(store: StateStore, repo: str, tag: str) -> None:
     """Lift a failure or a quarantine so the next run tries the tag again."""
     state = store.load(repo)
@@ -451,7 +468,32 @@ class Admitter:
         except _SkipProduct:
             self._remind(repo, state, now)
             raise
+        self._check_declarations(product, state, excluded)
         self._remind(repo, state, now)
+
+    def _check_declarations(
+        self, product: config.Product, state: ProductState, excluded: frozenset[str]
+    ) -> None:
+        """Say what the declarations cannot do: yank a tag that is not there, serve a cell with no
+        package. Both are decided from the state, so they repeat on a run that got a 304 too."""
+        repo = product.repo
+        for tag in sorted(excluded - set(state.listed) - state.admitted.keys(), key=tag_order):
+            detail = "the excluded tag is neither listed nor admitted"
+            self._event(repo, tag, "exclusion-unmatched", detail)
+        served = [tag for tag in state.admitted if self._wanted(tag, excluded)]
+        if not served:
+            return
+        newest = max(served, key=tag_order)
+        have = {(package.php, package.arch) for package in state.admitted[newest].packages}
+        missing = [
+            f"php{php} {arch}"
+            for php in product.php
+            for arch in product.arch
+            if (php, arch) not in have
+        ]
+        if missing:
+            detail = f"the newest admitted tag has no package for {', '.join(missing)}"
+            self._event(repo, newest, "cell-missing", detail)
 
     def _list_and_apply(
         self, product: config.Product, state: ProductState, excluded: frozenset[str], now: float

@@ -2,6 +2,7 @@
 # Copyright 2026 Fojle Rabbi (Rabib)
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import threading
@@ -125,28 +126,76 @@ def test_a_lock_file_that_is_a_symlink_is_refused(directory: Path, tmp_path: Pat
         RunLock(directory).acquire()
 
 
+def _quiet(message: str) -> None:
+    return None
+
+
 def test_take_nudge_consumes_the_file_once(tmp_path: Path) -> None:
     nudge = tmp_path / "nudge"
     nudge.write_text("", encoding="utf-8")
-    assert take_nudge(nudge) is True
-    assert take_nudge(nudge) is False
+    assert take_nudge(nudge, log=_quiet) is True
+    assert take_nudge(nudge, log=_quiet) is False
 
 
-def test_a_nudge_that_cannot_be_consumed_is_an_error(tmp_path: Path) -> None:
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_a_nudge_that_cannot_be_removed_is_an_error(tmp_path: Path) -> None:
+    box = tmp_path / "box"
+    box.mkdir()
+    nudge = box / "nudge"
+    nudge.write_text("", encoding="utf-8")
+    box.chmod(0o500)
+    try:
+        with pytest.raises(LockError, match="cannot consume the nudge"):
+            take_nudge(nudge, log=_quiet)
+    finally:
+        box.chmod(0o700)
+
+
+@pytest.mark.parametrize("mode", [0o755, 0o000])
+def test_a_nudge_that_is_a_directory_is_set_aside_and_still_counts(
+    tmp_path: Path, mode: int
+) -> None:
     nudge = tmp_path / "nudge"
     nudge.mkdir()
-    with pytest.raises(LockError, match="cannot consume the nudge"):
-        take_nudge(nudge)
+    (nudge / "inside").write_text("x", encoding="utf-8")
+    nudge.chmod(mode)
+    lines: list[str] = []
+    try:
+        assert take_nudge(nudge, log=lines.append) is True
+    finally:
+        for left in [nudge, *tmp_path.glob("nudge.rejected-*")]:
+            if left.exists():
+                left.chmod(0o755)  # so the temporary directory can be removed
+    assert not os.path.lexists(nudge)  # else the path unit would start the service again
+    (moved,) = tmp_path.glob("nudge.rejected-*")
+    assert moved.is_dir()
+    assert len(lines) == 1
+    assert moved.name in lines[0]
+    assert str(tmp_path) not in lines[0]
+
+
+def test_a_pass_that_crashes_on_a_directory_nudge_leaves_a_plain_nudge(
+    directory: Path, tmp_path: Path
+) -> None:
+    nudge = tmp_path / "nudge"
+    nudge.mkdir()
+
+    def crashing() -> int:
+        raise RuntimeError("boom")
+
+    with RunLock(directory) as lock, pytest.raises(RuntimeError, match="boom"):
+        run_passes(lock, nudge, crashing, log=_quiet)
+    assert nudge.is_file()
 
 
 def test_run_passes_needs_the_lock(directory: Path, tmp_path: Path) -> None:
     with pytest.raises(LockError, match="not held"):
-        run_passes(RunLock(directory), tmp_path / "nudge", lambda: 1)
+        run_passes(RunLock(directory), tmp_path / "nudge", lambda: 1, log=_quiet)
 
 
 def test_one_pass_runs_without_a_nudge(directory: Path, tmp_path: Path) -> None:
     with RunLock(directory) as lock:
-        assert run_passes(lock, tmp_path / "nudge", lambda: "done") == ["done"]
+        assert run_passes(lock, tmp_path / "nudge", lambda: "done", log=_quiet) == ["done"]
 
 
 def test_a_nudge_that_was_waiting_is_consumed_by_the_first_pass(
@@ -155,7 +204,7 @@ def test_a_nudge_that_was_waiting_is_consumed_by_the_first_pass(
     nudge = tmp_path / "nudge"
     nudge.write_text("", encoding="utf-8")
     with RunLock(directory) as lock:
-        assert len(run_passes(lock, nudge, lambda: 1)) == 1
+        assert len(run_passes(lock, nudge, lambda: 1, log=_quiet)) == 1
     assert not nudge.exists()
 
 
@@ -170,7 +219,7 @@ def test_a_nudge_during_a_pass_earns_one_more_pass(directory: Path, tmp_path: Pa
         return len(calls)
 
     with RunLock(directory) as lock:
-        assert run_passes(lock, nudge, one_pass) == [1, 2]
+        assert run_passes(lock, nudge, one_pass, log=_quiet) == [1, 2]
     assert not nudge.exists()
 
 
@@ -182,7 +231,21 @@ def test_a_pass_that_crashes_puts_the_consumed_nudge_back(directory: Path, tmp_p
         raise RuntimeError("boom")
 
     with RunLock(directory) as lock, pytest.raises(RuntimeError, match="boom"):
-        run_passes(lock, nudge, crashing)
+        run_passes(lock, nudge, crashing, log=_quiet)
+    assert nudge.exists()
+
+
+def test_a_pass_that_is_told_to_stop_puts_the_consumed_nudge_back(
+    directory: Path, tmp_path: Path
+) -> None:
+    nudge = tmp_path / "nudge"
+    nudge.write_text("", encoding="utf-8")
+
+    def stopped() -> int:
+        raise SystemExit(143)
+
+    with RunLock(directory) as lock, pytest.raises(SystemExit):
+        run_passes(lock, nudge, stopped, log=_quiet)
     assert nudge.exists()
 
 
@@ -193,7 +256,7 @@ def test_a_crash_without_a_nudge_does_not_invent_one(directory: Path, tmp_path: 
         raise RuntimeError("boom")
 
     with RunLock(directory) as lock, pytest.raises(RuntimeError, match="boom"):
-        run_passes(lock, nudge, crashing)
+        run_passes(lock, nudge, crashing, log=_quiet)
     assert not nudge.exists()
 
 
@@ -207,5 +270,5 @@ def test_a_flood_of_nudges_is_capped_and_the_last_one_stays(
         return 0
 
     with RunLock(directory) as lock:
-        assert len(run_passes(lock, nudge, one_pass, max_passes=3)) == 3
+        assert len(run_passes(lock, nudge, one_pass, log=_quiet, max_passes=3)) == 3
     assert nudge.exists()

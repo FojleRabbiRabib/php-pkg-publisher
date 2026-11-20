@@ -259,6 +259,45 @@ All notable changes to this project are documented here. The format follows
   clean-up of `rabib-release`, EL10 and Fedora 44 fail the drill.
 - `products.yml` entries now require `extension`, the name inside package names
   (`php8.3-<extension>`); two products cannot share one.
+- Unit tests for checks that no test covered: the signature status of `InRelease` alone (a wrong
+  subkey, another digest, two signatures), the armor shape of a signature, a pinned certificate that
+  is a link, the message for an expired primary key, the `Valid-Until` boundary, a quarantined tag
+  that a changed listing must not retry, a package in the published tree, a `current` that points
+  to a missing generation, a carried store file whose content does not match its name, a key file
+  with two certificates, a failed `rpmkeys --import`, a `cosign initialize` that fails but leaves a
+  valid file, an asset digest that is not sha256, and three receiver checks (a repeated delivery in
+  another letter case, the duplicate window, and the JSON depth cap, on both sides of 16 levels).
+- A time limit for every test (`pytest-timeout`: 120 seconds, 20 minutes for a container test), so a
+  test that hangs fails with its stack instead of stalling the run.
+- Two urgent alerts, each repeated once a day: an `exclude.yml` or `exclude:` entry whose tag is
+  neither listed by GitHub nor admitted (a typo yanked nothing, silently), and a product whose
+  newest admitted tag has no package for a declared PHP version or architecture (a widened
+  declaration is not applied to tags admitted before).
+- An urgent `nudge-stale` alert from the hourly watch when the nudge file is older than 2 hours
+  (no run lasts that long): the path unit is not starting runs, for example after a start limit.
+  A nudge that cannot be examined alerts as `nudge-unreadable`.
+- Runbook: how to enable the units, what exit statuses 0, 1 and 143 mean, how to recover from the
+  start limit (`reset-failed`, then start the path unit), how to stop publishing for good, and what
+  to do with the `sync.rejected-` entries that a directory in the nudge directory leaves behind.
+- `setup.sh --fingerprint FINGERPRINT`: the script reads the key out of the keyring package without
+  installing it, prints its fingerprint and expiry, and stops before the keyring package is
+  installed, imported or written when the primary key is not the one given (a missing gpg is
+  installed from the distribution first, to read the key). With the option, a key file that holds
+  more than one primary key is refused too, because the whole file would be trusted. The script
+  checks that the installed key file is the key it showed.
+- Security notes: the origin must accept Cloudflare only for the webhook throttle to trust
+  `CF-Connecting-IP`, and what a forged address can do (real deliveries refused with 429 for as long
+  as the forged requests continue, so publishing waits for the daily run).
+- The pin lint follows a local `uses: ./path` and checks the action it names wherever it lives. It
+  fails on a path that leaves the repository or does not exist, on a `run:` script that runs
+  `pip install` without `--require-hashes`, and on one that pipes `curl` or `wget` into a shell.
+- Dependabot also watches the Composer dependencies, and a test fails when a dependency file, a
+  workflow folder or a local action has no matching entry.
+- A test makes the PHP versions, architectures and distributions that several files repeat (the
+  client script, the outside watch, the container helpers, the CI matrix, the install guide) agree
+  with `publisher/config.py` and the container image list.
+- Every tracked file that can hold a comment now carries the licence header, and a test fails when
+  one does not; the files that cannot are listed with the reason.
 
 ### Changed
 
@@ -267,9 +306,33 @@ All notable changes to this project are documented here. The format follows
   load the publish modules.
 - Release tags may not have leading zeros in a number (`v01.0.0` is ignored), so two tags cannot
   map to one package version.
+- CI caches the pip downloads of the development tools; every file is still checked against its
+  pinned hash.
+- A `products.yml` that lists no product is refused while state of earlier products exists, so a
+  truncated file cannot publish an empty signed repository.
+- A listing fails as a whole when a release's own API URL does not name the product's repository,
+  whichever form the page links take (`/repos/<owner>/<repo>` or `/repositories/<id>`). A release
+  without that URL fails it too.
+- `setup.sh` shows the key before it installs the keyring package, not after the repository was
+  trusted. It needs `tar`, and `rpm2archive` on dnf. Without `--fingerprint` the key is still
+  trusted on first use, and the script and the install guide say so.
+- The install guide says it was tested on `amd64` and `x86_64` only; no container test runs
+  `arm64` or `aarch64`, which the repository accepts. A test fails if one is added without the
+  guide changing.
+- The install guide explains `setup.sh` and what a second run does on dnf: it turns on the section
+  of each PHP it finds installed, so a section turned off by hand in the repository file is turned
+  on again.
+- The pin lint skips `vendor`, `node_modules`, `.venv` and the caches only at the top of the
+  repository; a folder of that name lower down is checked, and `.github` is never skipped.
+- The key rotation step now says to switch to the new subkey at least 21 days before the old one
+  expires, not 14: the publisher refuses a subkey with 14 days or fewer left, so 14 days left no
+  margin.
 
 ### Fixed
 
+- A refused configuration (a malformed `products.yml` or `exclude.yml`, or the empty list above)
+  made the run raise, so its nudge was put back and the path unit started the service again until
+  the start limit. It is now one urgent alert and exit 1, and the nudge stays consumed.
 - The install guide and the security notes named `NO_PUBKEY` and `Signing key not found` for every
   client. Measured: apt on Debian 13 says `Missing key`, and dnf on Enterprise Linux 8 and 9 says
   `Bad GPG signature`; the guide now quotes each, and a test checks it.
@@ -277,3 +340,53 @@ All notable changes to this project are documented here. The format follows
   process id could pass to another process in between. The group is now killed while the ended
   program is still unreaped, and a test checks the order. A program whose exit status is lost
   because the process ignores SIGCHLD now fails the run; it used to count as exit code 0.
+- An unusable alert file (owner, mode, shape) made the run raise after it had published, so its
+  nudge was put back and the path unit started the service again until the start limit stopped
+  the webhook runs. The run now logs the alerts, ends with exit 1 and keeps the nudge consumed. A
+  chat-service reply nested too deep for the JSON parser is now a failed delivery, not a crash.
+- A directory named like the nudge file (the web server's group may create one) made every run
+  fail before it started. It is now set aside under another name, with a log line, and counts as
+  a nudge.
+- When publishing raised, the alerts of the admit stage in that pass (a first quarantine, a
+  stopped stage) were never sent. They are sent before the error is raised.
+- A run stopped by SIGTERM (a stop, a reboot, the one-hour timeout) lost the nudge it had consumed,
+  so the release waited for the daily timer. It now puts the nudge back and ends with exit 143,
+  which the service counts as a clean exit (`SuccessExitStatus=143`). The comment of the unit,
+  which said a failed run puts its nudge back, now says which runs do. A program that a tool call
+  had started is now stopped when the run is stopped, not only on a timeout or a flood of output.
+- The hourly watch ended green when its alerts could not be delivered; it now exits 1.
+- A Sigstore trusted-root file, or a generation manifest, nested deeper than the JSON parser allows
+  ended the run with an unhandled error. A refreshed trusted root like that now falls back to the
+  stored copy, a stored one stops the run with the usual message, and a manifest like that is
+  refused as not valid.
+
+- A hash-named file that is missing or damaged in the store (a power cut, a deletion) no longer
+  blocks every later publish, which would have stopped the daily re-signing until `Valid-Until`
+  ran out. It is restored from the newest kept tree that still has its right bytes, or replaced by
+  the copy of the build in progress, and a `store-repaired` alert says so. A file that no tree has
+  is left out and an urgent `store-lost` alert (once a day) says so, because the publish used to
+  refuse and clients of that index could not fetch the file anyway. A damaged file that only its
+  age keeps (no kept index lists it) is dropped. The `rollback` command prints when it restored or
+  lost files, and the store directories that get a new link are now flushed too.
+- Temporary files that a crashed write left in `generations/` and in the site root were never
+  removed; the sweep at the start of every run now removes them.
+- A delivery that arrived in the instant the publisher took the nudge file got a 500, a failed
+  delivery in GitHub's webhook log, although nothing was lost. The receiver now makes a new nudge
+  (one retry; a second failure is still a 500); the publisher skips a pass that finds no change.
+- The rpm key stayed trusted after the install guide's removal block, and after a `setup.sh` run
+  that was refused. The dnf removal block now takes the imported key out of rpm's key store (one
+  rule for rpm 4 and for rpm 6, which names the key differently), and `setup.sh` takes out a key
+  only if that run imported it. Its comment now says what is put back and what is not.
+
+### Security
+
+- Key fingerprints are now replaced before error text is cut to its length, so one that straddled
+  the cut is no longer left half visible in the journal. The shared text helper also replaces host
+  paths now. Only text built through that helper and the alert text is covered, and only the
+  patterns they already had: a fingerprint written with spaces and a path with a space or a colon
+  are not.
+- The webhook receiver no longer lets PHP error text reach the client on a host that shows errors:
+  it turns `display_errors` off and `log_errors` on, and anything the handler throws becomes a bare
+  500. Each 500 the receiver decides on or catches writes one `pkg-hook: <reason>` line to the
+  error log with a fixed reason code and never a path, a secret or an exception message. A fatal
+  error PHP cannot catch (the memory or time limit) is logged by PHP itself.

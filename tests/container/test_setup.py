@@ -101,6 +101,8 @@ def _dnf(box: Box, mirror: Mirror, kit: Kit) -> None:
     done = run(box)
     assert done.code != 0 and "refused the repository" in done.output, done.output
     assert box.run("ls", DNF_REPO).code != 0
+    # the key this run imported is taken out again
+    assert set(box.run("rpm", "-qa", "gpg-pubkey*").output.split()) == set(before)
     mirror.tamper = set()
     done = run(box)
     assert done.code == 0, done.output
@@ -139,6 +141,8 @@ def _dnf(box: Box, mirror: Mirror, kit: Kit) -> None:
     assert done.code != 0, done.output
     assert "refused the repository" in done.output, done.output
     assert box.run("cat", DNF_REPO).output == edited
+    # a key that was in the store before this run is not this run's to take out
+    assert set(box.run("rpm", "-qa", "gpg-pubkey*").output.split()) == set(after)
     mirror.tamper = set()
     # an unreachable repomd.xml fails the run even where dnf is set to skip unavailable repos
     done = box.run("sh", "-c", "printf 'skip_if_unavailable=True\\n' >> /etc/dnf/dnf.conf")

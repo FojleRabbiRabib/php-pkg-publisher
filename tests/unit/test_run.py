@@ -2,13 +2,15 @@
 # Copyright 2026 Fojle Rabbi (Rabib)
 from __future__ import annotations
 
+import os
+import signal
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
 
 import pytest
 
-from publisher import admit, feed, generation, run, verify
+from publisher import admit, config, feed, generation, run, verify
 from publisher import alert as alert_module
 from publisher import lock as locking
 from publisher.__main__ import main
@@ -61,7 +63,9 @@ class FakeStages:
 
 def _run(stages: FakeStages) -> tuple[run.Result, list[str]]:
     lines: list[str] = []
-    result = run.run_pass(stages, PRODUCTS, EXCLUSIONS, now=1.0, log=lines.append)
+    result = run.run_pass(
+        stages, PRODUCTS, EXCLUSIONS, now=1.0, log=lines.append, emit=lambda _: None
+    )
     return result, lines
 
 
@@ -127,12 +131,20 @@ def test_admitted_events_do_not_alert() -> None:
     assert _kinds(result) == ["published"]
 
 
-@pytest.mark.parametrize("kind", ["changed", "vanished"])
+@pytest.mark.parametrize("kind", ["changed", "vanished", "exclusion-unmatched", "cell-missing"])
 def test_repeating_events_carry_a_dedupe_key(kind: str) -> None:
     event = admit.Event(product="usearch-php", tag="v1.0.0", kind=kind, detail="x")  # type: ignore[arg-type]
     result, _ = _run(FakeStages(report=admit.Report(events=(event,), stopped=None)))
     alert = next(a for a in result.alerts if a.kind == kind)
     assert alert.key == f"{kind}:usearch-php v1.0.0"
+
+
+@pytest.mark.parametrize("kind", ["exclusion-unmatched", "cell-missing"])
+def test_a_declaration_that_does_nothing_is_urgent_and_does_not_fail_the_run(kind: str) -> None:
+    event = admit.Event(product="usearch-php", tag="v1.0.0", kind=kind, detail="x")  # type: ignore[arg-type]
+    result, _ = _run(FakeStages(report=admit.Report(events=(event,), stopped=None)))
+    assert next(a for a in result.alerts if a.kind == kind).urgent
+    assert result.failure is None
 
 
 def test_a_dropped_pin_and_a_cleanup_failure_alert_without_failing() -> None:
@@ -147,6 +159,46 @@ def test_a_dropped_pin_and_a_cleanup_failure_alert_without_failing() -> None:
     )
     result, _ = _run(stages)
     assert _kinds(result) == ["published", "pin-dropped", "cleanup-failed"]
+    assert result.failure is None
+
+
+def test_a_restored_store_alerts_without_failing_and_is_logged() -> None:
+    stages = FakeStages(
+        published=generation.Published(
+            generation="00000002-20260101T000000Z",
+            skipped=False,
+            pinned=False,
+            repaired=("rpm/8.3/x86_64/repodata/a", "rpm/8.3/x86_64/repodata/b"),
+        )
+    )
+    result, logged = _run(stages)
+    assert _kinds(result) == ["published", "store-repaired"]
+    alert = next(a for a in result.alerts if a.kind == "store-repaired")
+    assert not alert.urgent
+    assert alert.key is None
+    assert "2 stored files" in alert.text
+    assert "/" not in alert.text
+    assert any("store repaired: 2" in line for line in logged)
+    assert result.failure is None
+
+
+def test_lost_store_files_alert_urgently_once_a_day_without_failing() -> None:
+    stages = FakeStages(
+        published=generation.Published(
+            generation="00000002-20260101T000000Z",
+            skipped=False,
+            pinned=False,
+            lost=("rpm/8.3/x86_64/repodata/a", "rpm/8.3/x86_64/repodata/b"),
+        )
+    )
+    result, logged = _run(stages)
+    assert _kinds(result) == ["published", "store-lost"]
+    alert = next(a for a in result.alerts if a.kind == "store-lost")
+    assert alert.urgent
+    assert alert.key == "store-lost"
+    assert "2 files" in alert.text
+    assert "/" not in alert.text
+    assert any("store lost: 2" in line for line in logged)
     assert result.failure is None
 
 
@@ -278,6 +330,104 @@ def test_a_raising_pass_puts_the_nudge_back(
     assert settings.nudge.exists()
 
 
+def _empty_products(settings: Settings) -> None:
+    settings.products.write_text("products: []\n", encoding="utf-8")
+
+
+def _earlier_state(settings: Settings, name: str = "usearch-php.json") -> None:
+    directory = settings.state / admit.PRODUCTS_DIRECTORY
+    directory.mkdir(mode=0o700, exist_ok=True)
+    (directory / name).write_text("{}", encoding="utf-8")
+
+
+def test_an_empty_product_list_is_refused_when_earlier_products_have_state(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    _empty_products(settings)
+    _earlier_state(settings)
+    with pytest.raises(config.ConfigError, match="lists no product, but earlier products have"):
+        run._load(settings)
+
+
+def test_an_unreadable_state_directory_is_a_refused_configuration_only_for_an_empty_list(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    (settings.state / admit.PRODUCTS_DIRECTORY).write_text("not a directory", encoding="utf-8")
+    products, _ = run._load(settings)  # the list names a product: the directory is not looked at
+    assert len(products.products) == 1
+    _empty_products(settings)
+    with pytest.raises(config.ConfigError, match="cannot list the products with state"):
+        run._load(settings)
+
+
+def test_an_empty_product_list_loads_when_nothing_was_ever_admitted(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    _empty_products(settings)
+    _earlier_state(settings, ".state-x1y2z3")  # a half-written file of a crashed run
+    products, _ = run._load(settings)
+    assert products.products == ()
+
+
+def test_a_listed_product_loads_whatever_state_there_is(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    _earlier_state(settings, "other-php.json")
+    products, _ = run._load(settings)
+    assert [p.repo for p in products.products] == ["usearch-php"]
+
+
+def test_a_refused_configuration_alerts_and_does_not_put_the_nudge_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    _empty_products(settings)
+    _earlier_state(settings)
+
+    def never(*args: object, **kwargs: object) -> FakeStages:
+        raise AssertionError("no stage may start on a configuration that was refused")
+
+    monkeypatch.setattr(run, "LiveStages", never)
+    settings.nudge.write_bytes(b"")
+    seen: list[run.Result] = []
+    results = run.run_once(settings, emit=seen.append, now=5.0, log=lambda _: None)
+    assert seen == results
+    (result,) = results
+    assert result.failure is not None
+    assert "lists no product" in result.failure
+    assert str(tmp_path) not in result.failure
+    (item,) = result.alerts
+    assert (item.kind, item.urgent) == ("config-refused", True)
+    assert not settings.nudge.exists()  # a restored nudge would start the service again
+
+
+def test_a_malformed_exclude_file_is_refused_the_same_way(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    settings.exclude.write_text("exclude: [oops]\n", encoding="utf-8")
+    _patch_live(monkeypatch, FakeStages())
+    settings.nudge.write_bytes(b"")
+    (result,) = run.run_once(settings, emit=lambda _: None, now=5.0, log=lambda _: None)
+    assert result.failure is not None
+    assert "configuration refused" in result.failure
+    assert not settings.nudge.exists()
+
+
+def test_main_exits_one_and_names_the_refused_file_without_its_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = _settings(tmp_path)
+    _write_credentials(settings)
+    _fake_telegram(monkeypatch)
+    _empty_products(settings)
+    _earlier_state(settings)
+    assert main(["--config", str(tmp_path / "publisher.yml"), "run"]) == 1
+    assert "configuration refused" in capsys.readouterr().err
+    assert len(_FakeTelegram.sent) == 1
+    assert str(tmp_path) not in _FakeTelegram.sent[0]
+
+
 @pytest.mark.parametrize("broken", ["trusted_root", "admit"])
 @pytest.mark.parametrize(
     "fault", [verify.VerifyError("x"), ToolError("x"), feed.FeedError("x"), PermissionError("x")]
@@ -335,6 +485,59 @@ def test_a_publish_that_raises_after_a_stopped_admit_raises() -> None:
     stages.publish = fail  # type: ignore[method-assign,assignment]
     with pytest.raises(generation.GenerationError):
         _run(stages)
+
+
+def _stages_that_cannot_publish() -> FakeStages:
+    stages = FakeStages(report=admit.Report(events=(), stopped="tool missing"))
+
+    def fail(*args: object) -> None:
+        raise generation.GenerationError("disk full")
+
+    stages.publish = fail  # type: ignore[method-assign,assignment]
+    return stages
+
+
+def test_the_admit_alerts_are_emitted_when_publishing_raises() -> None:
+    emitted: list[run.Result] = []
+    with pytest.raises(generation.GenerationError):
+        run.run_pass(
+            _stages_that_cannot_publish(),
+            PRODUCTS,
+            EXCLUSIONS,
+            now=1.0,
+            log=lambda _: None,
+            emit=emitted.append,
+        )
+    (result,) = emitted
+    assert _kinds(result) == ["stopped"]
+    assert result.failure is not None
+    assert result.failure.startswith("publish failed")
+
+
+def test_a_failing_emit_does_not_hide_the_publish_error() -> None:
+    def broken(result: run.Result) -> None:
+        raise alert_module.CredentialsError("no file")
+
+    lines: list[str] = []
+    with pytest.raises(generation.GenerationError, match="disk full"):
+        run.run_pass(
+            _stages_that_cannot_publish(),
+            PRODUCTS,
+            EXCLUSIONS,
+            now=1.0,
+            log=lines.append,
+            emit=broken,
+        )
+    assert "error: alerts not emitted: CredentialsError" in lines
+
+
+def test_a_finished_pass_is_emitted_once_with_the_result_it_returns() -> None:
+    emitted: list[run.Result] = []
+    result = run.run_pass(
+        FakeStages(), PRODUCTS, EXCLUSIONS, now=1.0, log=lambda _: None, emit=emitted.append
+    )
+    assert len(emitted) == 1
+    assert emitted[0] is result
 
 
 class _FakeTelegram:
@@ -437,7 +640,31 @@ def test_main_rollback_reports_the_new_generation(
     code = main(["--config", str(tmp_path / "publisher.yml"), "rollback", "00000001-y"])
     assert code == 0
     assert seen == ["00000001-y"]
-    assert "00000009-x" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "00000009-x" in output
+    assert "store repaired" not in output
+
+
+def test_main_rollback_says_when_it_restored_stored_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _settings(tmp_path)
+
+    def fake(settings: Settings, identifier: str, **kwargs: object) -> generation.Published:
+        return generation.Published(
+            generation="00000009-x",
+            skipped=False,
+            pinned=True,
+            repaired=("a", "b", "c"),
+            lost=("d", "e"),
+        )
+
+    monkeypatch.setattr(run, "rollback", fake)
+    code = main(["--config", str(tmp_path / "publisher.yml"), "rollback", "00000001-y"])
+    assert code == 0
+    output = capsys.readouterr().out
+    assert "store repaired: 3 hash-named files restored" in output
+    assert "store lost: 2 hash-named files have no copy" in output
 
 
 def _quarantine(settings: Settings) -> None:
@@ -601,6 +828,56 @@ def test_an_unusable_alert_file_fails_the_run_after_the_alerts_were_logged(
     assert "failed:" in err
     _patch_run_once(monkeypatch, [quiet])
     assert main(["--config", str(tmp_path / "publisher.yml"), "run"]) == 1
+
+
+def _patch_live(monkeypatch: pytest.MonkeyPatch, stages: FakeStages) -> None:
+    monkeypatch.setattr(run, "LiveStages", lambda *a, **k: stages)
+    monkeypatch.setattr(Tools, "locate", classmethod(lambda cls: None))
+    monkeypatch.setattr(run, "Cache", lambda *a, **k: None)
+
+
+def test_an_unusable_alert_file_does_not_put_the_nudge_back_or_hide_the_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = _settings(tmp_path)  # no credentials file was written
+    stages = FakeStages()
+    _patch_live(monkeypatch, stages)
+    settings.nudge.write_bytes(b"")
+    assert main(["--config", str(tmp_path / "publisher.yml"), "run"]) == 1
+    assert stages.calls == ["trust", "admit", "publish"]
+    assert not settings.nudge.exists()  # a restored nudge would start the service again at once
+    err = capsys.readouterr().err
+    assert "alert published:" in err
+    assert "failed: alerts not sent" in err
+    assert str(tmp_path) not in err
+
+
+def test_a_stop_signal_puts_the_nudge_back_and_ends_with_exit_143(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    stages = FakeStages()
+
+    def stopped(now: float) -> admit.Report:
+        os.kill(os.getpid(), signal.SIGTERM)
+        raise AssertionError("the stop signal did not interrupt the pass")
+
+    stages.admit = stopped  # type: ignore[method-assign]
+    _patch_live(monkeypatch, stages)
+    settings.nudge.write_bytes(b"")
+
+    def guard(number: int, frame: object) -> None:
+        raise AssertionError("the run did not handle the stop signal")  # not a dead test run
+
+    before = signal.signal(signal.SIGTERM, guard)
+    try:
+        with pytest.raises(SystemExit) as caught:
+            main(["--config", str(tmp_path / "publisher.yml"), "run"])
+        assert signal.getsignal(signal.SIGTERM) is guard
+    finally:
+        signal.signal(signal.SIGTERM, before)
+    assert caught.value.code == 128 + signal.SIGTERM
+    assert settings.nudge.exists()
 
 
 @pytest.mark.parametrize(

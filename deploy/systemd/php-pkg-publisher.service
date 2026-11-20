@@ -5,11 +5,17 @@ Description=Verify new releases, then build and sign the package repository
 After=network-online.target
 Wants=network-online.target
 OnFailure=php-pkg-publisher-notify@%n.service
-# A failed run puts its nudge back, so the path unit starts it again at once; the limit stops
-# that loop after five starts in ten minutes (measured on systemd 249: the service goes to
-# start-limit-hit, the path unit fails and is reported too, and it watches again only after
-# `systemctl reset-failed` and `systemctl start php-pkg-publisher.path`). Real webhooks seldom
-# come close, because a run absorbs the nudges that arrive while it works.
+# A run that raises, or that is stopped by SIGTERM (a stop, a reboot, the timeout below), puts
+# its nudge back, so the path unit starts it again at once; the limit stops that loop after five
+# starts in ten minutes (measured on systemd 249: the service goes to start-limit-hit, the path
+# unit fails and is reported too, and it watches again only after `systemctl reset-failed` and
+# `systemctl start php-pkg-publisher.path`). A run that ends with exit 1 (a failed pass, an
+# unusable alert file) has handled its nudge and does not put it back; the daily timer retries.
+# A run cut by the timeout also puts its nudge back, so a run that hangs every time is started
+# again after each timeout (alerting each time); five starts do not fit in ten minutes, so the
+# limit does not stop that. To stop the service for good, stop the path unit as well. Real
+# webhooks seldom come close to the limit, because a run absorbs the nudges that arrive while it
+# works.
 StartLimitIntervalSec=600
 StartLimitBurst=5
 
@@ -18,6 +24,8 @@ Type=oneshot
 User=php-pkg-publisher
 Group=php-pkg-publisher
 TimeoutStartSec=1h
+# The run turns SIGTERM into exit 143 after it put its nudge back: that exit is not a failure.
+SuccessExitStatus=143
 WorkingDirectory=/opt/php-pkg-publisher
 Environment=PYTHONPATH=/opt/php-pkg-publisher PYTHONDONTWRITEBYTECODE=1 TMPDIR=/tmp
 ExecStart=/usr/bin/python3 -s -m publisher --config /etc/php-pkg-publisher/publisher.yml run

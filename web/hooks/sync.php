@@ -32,6 +32,7 @@ const GUID_WINDOW = 120;
 const MAX_ENTRIES = 1000;
 const MAX_CLEANUP = 20;
 const MIN_SECRET_BYTES = 16;
+const NUDGE_ATTEMPTS = 2;
 
 /**
  * @phpstan-type RequestData array{
@@ -47,8 +48,24 @@ const MIN_SECRET_BYTES = 16;
  */
 final readonly class Receiver
 {
-    public function __construct(private string $nudgeDir, private string $secretFile)
+    /**
+     * @param Closure(string): void $report Called with a fixed reason code for every 500: never a
+     *                                      path, a secret or an exception message.
+     * @param (Closure(string): (resource|false))|null $create Exclusive create of the nudge file,
+     *                                      for tests that need a race the file system cannot give.
+     */
+    public function __construct(
+        private string $nudgeDir,
+        private string $secretFile,
+        private Closure $report,
+        private ?Closure $create = null
+    ) {
+    }
+
+    private function fail(string $reason): int
     {
+        ($this->report)($reason);
+        return 500;
     }
 
     /** Number of entries in a directory, counting no further than the limit plus one. */
@@ -191,7 +208,7 @@ final readonly class Receiver
     {
         $directory = $this->nudgeDir . '/guid';
         if (!$this->ensureDirectory($directory)) {
-            return 500;
+            return $this->fail('guid-directory-unusable');
         }
         $modified = @filemtime($this->guidPath($delivery));
         if ($modified !== false && $request['now'] - $modified < GUID_WINDOW) {
@@ -215,20 +232,28 @@ final readonly class Receiver
     /**
      * Create the nudge file. One that is already there counts as success, whoever owns it: the
      * publisher may have re-created it as its own, and an existing nudge means a run is pending.
+     * One that vanishes between the failed create and the check was just taken by the publisher,
+     * so one more try is made; a second failure is a real fault. The publisher skips a pass that
+     * finds no change.
      */
     private function nudge(): bool
     {
         $path = $this->nudgeDir . '/sync';
-        // PHP's exclusive mode still follows a dangling link and creates its target, so refuse links.
-        if (is_link($path)) {
-            return false;
+        for ($attempt = 0; $attempt < NUDGE_ATTEMPTS; ++$attempt) {
+            // PHP's exclusive mode still follows a dangling link and creates its target, so refuse links.
+            if (is_link($path)) {
+                return false;
+            }
+            $handle = ($this->create ?? static fn (string $file) => @fopen($file, 'x'))($path);
+            if ($handle !== false) {
+                fclose($handle);
+                return true;
+            }
+            if (is_file($path)) {
+                return true;
+            }
         }
-        $handle = @fopen($path, 'x');
-        if ($handle !== false) {
-            fclose($handle);
-            return true;
-        }
-        return is_file($path);
+        return false;
     }
 
     /**
@@ -244,7 +269,7 @@ final readonly class Receiver
         // Two users share this directory (the publisher unlinks `sync`), so it is made by the
         // operator, never by the receiver.
         if (!is_dir($this->nudgeDir)) {
-            return 500;
+            return $this->fail('nudge-directory-missing');
         }
         $this->sweep($this->nudgeDir . '/thr', THROTTLE_WINDOW, $request['now']);
         $this->sweep($this->nudgeDir . '/guid', GUID_WINDOW, $request['now']);
@@ -261,7 +286,7 @@ final readonly class Receiver
         }
         $secret = $this->readSecret();
         if ($secret === null) {
-            return 500;
+            return $this->fail('secret-unusable');
         }
         if (!$this->validSignature($request, $body, $secret)) {
             return 401;
@@ -285,7 +310,7 @@ final readonly class Receiver
             return $seen;
         }
         if (!$this->nudge()) {
-            return 500;
+            return $this->fail('nudge-failed');
         }
         $this->remember($delivery, $request['now']);
         return 202;
@@ -298,10 +323,33 @@ function serverValue(string $name): ?string
     return is_string($value) ? $value : null;
 }
 
+/**
+ * Run the handler; whatever it throws becomes a 500 that names only the exception class, so an
+ * error never reaches the client and no message (which may hold a path) reaches the log.
+ *
+ * @param Closure(): int $handle
+ * @param Closure(string): void $report
+ */
+function guarded(Closure $handle, Closure $report): int
+{
+    try {
+        return $handle();
+    } catch (\Throwable $error) {
+        $report('internal-error ' . $error::class);
+        return 500;
+    }
+}
+
 /** Answer the request from the web server's variables. */
 function serve(): void
 {
+    // Nothing an error says may reach the client; the reason codes go to the error log.
+    ini_set('display_errors', '0');
+    ini_set('log_errors', '1');
     header_remove('X-Powered-By');
+    $report = static function (string $reason): void {
+        error_log('pkg-hook: ' . $reason);
+    };
     $address = serverValue('HTTP_CF_CONNECTING_IP') ?? serverValue('REMOTE_ADDR') ?? '';
     if (filter_var($address, FILTER_VALIDATE_IP) === false) {
         $address = serverValue('REMOTE_ADDR') ?? 'unknown';
@@ -322,7 +370,8 @@ function serve(): void
         ),
         'now' => time(),
     ];
-    $status = (new Receiver(NUDGE_DIR, SECRET_FILE))->handle($request);
+    $receiver = new Receiver(NUDGE_DIR, SECRET_FILE, $report);
+    $status = guarded(static fn (): int => $receiver->handle($request), $report);
     http_response_code($status);
     header('Cache-Control: no-store');
     if ($status === 405) {

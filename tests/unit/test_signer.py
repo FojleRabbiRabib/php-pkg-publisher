@@ -11,6 +11,7 @@ import tempfile
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -775,3 +776,121 @@ def test_a_detached_signature_by_another_subkey_is_refused(
     fake = dataclasses.replace(tools, gpg=_gpg_wrapper(tmp_path, tools.gpg, edit))
     with pytest.raises(SigningError, match=r"Release\.gpg: was not made by the configured"):
         sign(site.tree, source.built, key, tools=fake, work=site.work)
+
+
+def test_an_inrelease_signature_by_another_subkey_is_refused(
+    tools: Tools,
+    source: Source,
+    site: Site,
+    tmp_path: Path,
+    two_subkeys: tuple[SigningKey, str],
+) -> None:
+    """Only InRelease (what modern apt reads) is signed by the wrong subkey."""
+    key, other = two_subkeys
+    edit = (
+        "if '--clearsign' in args:\n"
+        f"    args = [a.replace({key.fingerprint + '!'!r}, {other + '!'!r}) for a in args]\n"
+    )
+    fake = dataclasses.replace(tools, gpg=_gpg_wrapper(tmp_path, tools.gpg, edit))
+    with pytest.raises(SigningError, match=r"InRelease: was not made by the configured"):
+        sign(site.tree, source.built, key, tools=fake, work=site.work)
+    assert not (site.tree / "dists/stable/InRelease").exists()
+
+
+def test_an_inrelease_signed_with_another_digest_is_refused(
+    tools: Tools, keys: Keys, source: Source, site: Site, tmp_path: Path
+) -> None:
+    edit = "if '--clearsign' in args:\n    args = ['SHA512' if a == 'SHA256' else a for a in args]"
+    fake = dataclasses.replace(tools, gpg=_gpg_wrapper(tmp_path, tools.gpg, edit))
+    with pytest.raises(SigningError, match=r"InRelease: was not signed with SHA256"):
+        sign(site.tree, source.built, keys.vps, tools=fake, work=site.work)
+
+
+def test_an_inrelease_dual_signature_is_refused(
+    tools: Tools,
+    source: Source,
+    site: Site,
+    tmp_path: Path,
+    two_subkeys: tuple[SigningKey, str],
+) -> None:
+    key, other = two_subkeys
+    edit = (
+        "if '--clearsign' in args:\n"
+        "    i = args.index('--local-user')\n"
+        f"    args[i:i] = ['--local-user', {other + '!'!r}]\n"
+    )
+    fake = dataclasses.replace(tools, gpg=_gpg_wrapper(tmp_path, tools.gpg, edit))
+    with pytest.raises(SigningError, match=r"InRelease: does not carry exactly one good"):
+        sign(site.tree, source.built, key, tools=fake, work=site.work)
+
+
+def test_an_expired_primary_key_is_refused_for_the_primary_not_for_its_subkey(
+    tools: Tools, source: Source, site: Site, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    root = tmp_path_factory.mktemp("pexp")
+    bad = make_key(tools, root, "pexp", "primary-expired")
+    home = subkeys_only(tools, bad, root, "pexp-vps")
+    try:
+        with pytest.raises(SigningError, match="pinned primary key is expired or revoked"):
+            _sign(site, source, _signing_key(home), tools)
+    finally:
+        stop_agent(home)
+        stop_agent(bad)
+
+
+def test_a_subkey_expiring_exactly_when_the_release_stops_being_valid_is_refused(
+    tools: Tools, keys: Keys, source: Source, site: Site, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release = site.tree / "dists/stable/Release"
+    fields, _ = metadata.parse_release(release.read_text(encoding="utf-8"))
+    until = datetime.strptime(fields["Valid-Until"], metadata.RELEASE_DATE_FORMAT)
+    boundary = until.replace(tzinfo=timezone.utc).timestamp()
+    monkeypatch.setattr(signer, "_check_certificate", lambda *a, **k: boundary)
+    with pytest.raises(SigningError, match="expires before the Release"):
+        _sign(site, source, keys.vps, tools)
+
+
+_SIG = "-----BEGIN PGP SIGNATURE-----\nAAAA\n-----END PGP SIGNATURE-----\n"
+_CLEAR = "-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\nbody\n"
+
+
+@pytest.mark.parametrize(
+    ("text", "header"),
+    [
+        ("junk\n" + _SIG, signer.DETACHED_HEADER),
+        (_SIG + "-----BEGIN PGP PUBLIC KEY BLOCK-----\nAAAA\n", signer.DETACHED_HEADER),
+        (_SIG + _SIG, signer.DETACHED_HEADER),
+        (_CLEAR + "-----BEGIN PGP MESSAGE-----\nAAAA\n", signer.CLEARSIGN_HEADER),
+        (_CLEAR + _SIG + _SIG, signer.CLEARSIGN_HEADER),
+        (_CLEAR + _SIG + "-----BEGIN PGP PUBLIC KEY BLOCK-----\nAAAA\n", signer.CLEARSIGN_HEADER),
+    ],
+    ids=[
+        "preamble",
+        "extra-block",
+        "two-signatures",
+        "no-signature-block",
+        "clear-two-signatures",
+        "clear-extra-block",
+    ],
+)
+def test_armor_that_is_not_exactly_one_signature_is_refused(text: str, header: str) -> None:
+    with pytest.raises(SigningError, match="not exactly one armored signature"):
+        signer._check_armor(text, header, "x")
+
+
+@pytest.mark.parametrize(
+    ("text", "header"),
+    [(_SIG, signer.DETACHED_HEADER), (_CLEAR + _SIG, signer.CLEARSIGN_HEADER)],
+)
+def test_armor_of_exactly_one_signature_is_accepted(text: str, header: str) -> None:
+    signer._check_armor(text, header, "x")
+
+
+def test_a_pinned_certificate_that_is_a_symlink_is_refused(
+    tools: Tools, keys: Keys, source: Source, site: Site, tmp_path: Path
+) -> None:
+    link = tmp_path / "cert.asc"
+    link.symlink_to(keys.vps.certificate)
+    key = dataclasses.replace(keys.vps, certificate=link)
+    with pytest.raises(SigningError, match="must be a regular file"):
+        _sign(site, source, key, tools)

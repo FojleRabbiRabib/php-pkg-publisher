@@ -1,5 +1,6 @@
 [
   {
+    "url": "https://api.github.com/repos/FojleRabbiRabib/resvg-php/releases/403158236",
     "tag_name": "v0.3.0",
     "draft": false,
     "prerelease": false,
@@ -29,6 +30,7 @@
     ]
   },
   {
+    "url": "https://api.github.com/repos/FojleRabbiRabib/resvg-php/releases/402404854",
     "tag_name": "v0.2.0",
     "draft": false,
     "prerelease": false,
@@ -58,6 +60,7 @@
     ]
   },
   {
+    "url": "https://api.github.com/repos/FojleRabbiRabib/resvg-php/releases/400420992",
     "tag_name": "v0.1.1+resvg.0.48.1",
     "draft": false,
     "prerelease": false,
@@ -87,6 +90,7 @@
     ]
   },
   {
+    "url": "https://api.github.com/repos/FojleRabbiRabib/resvg-php/releases/399798664",
     "tag_name": "v0.1.0+resvg.0.48.1",
     "draft": false,
     "prerelease": false,

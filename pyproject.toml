@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Fojle Rabbi (Rabib)
 [project]
 name = "php-pkg-publisher"
 version = "0.0.0"
@@ -27,4 +29,5 @@ files = ["publisher", "tools", "tests"]
 pythonpath = [".", "tools", "tests/unit", "tests/negative", "tests/container"]
 testpaths = ["tests"]
 addopts = "-m 'not container'"
+timeout = 120
 markers = ["container: installs with a real apt or dnf in docker; run with `pytest -m container`"]

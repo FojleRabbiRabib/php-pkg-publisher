@@ -39,8 +39,6 @@ BOT_TOKEN: Final = re.compile(r"[0-9]{3,20}:[A-Za-z0-9_-]{20,100}")
 MAX_SEEN: Final = 1000
 MAX_MESSAGES: Final = 5
 PAUSE_SECONDS: Final = 1.1  # the service allows about one message a second per chat
-KEY_ID: Final = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{40}(?![0-9A-Fa-f])")
-HOST_PATH: Final = re.compile(r"(?<![\w/.])/[^\s'\":,;)(\]\[]+")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -53,7 +51,7 @@ class Alert:
 
 def clean(text: str) -> str:
     """Release or tool text as short ASCII without host paths or key fingerprints."""
-    return ascii(KEY_ID.sub("<id>", HOST_PATH.sub("<path>", text)))[:MAX_TEXT]
+    return ascii(net.redact(text))[:MAX_TEXT]
 
 
 class AlertError(Exception):
@@ -186,7 +184,7 @@ class Telegram:
     def _check(self, status: int, raw: bytes) -> None:
         try:
             document = json.loads(raw, object_pairs_hook=net.no_duplicate_keys)
-        except ValueError:
+        except (ValueError, RecursionError):  # a reply nested deeper than the parser allows
             document = None
         answer = document if isinstance(document, dict) else {}
         if status == 200 and answer.get("ok") is True:
@@ -259,9 +257,10 @@ class Dispatcher:
     An alert with a `key` is an event that repeats on every full listing. It is recorded only
     after the message that carried it was accepted, so an undelivered one is tried again on the
     next run, and keys that did not occur in a pass are forgotten, so a recurrence alerts again.
-    A failed delivery never fails the run: every undelivered alert goes to `log` in full. The
-    credentials are checked on every call, also when there is nothing to say, so a broken
-    credentials file is found before the day an alert is needed.
+    A failed delivery does not raise: every undelivered alert goes to `log` in full and the call
+    returns False; the publisher run ignores that (the repository is still right), the watch
+    fails on it. The credentials are checked on every call, also when there is nothing to say, so
+    a broken credentials file is found before the day an alert is needed.
     """
 
     def __init__(

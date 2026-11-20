@@ -6,7 +6,8 @@ The client only lists; downloading, verification and state belong to later stage
 plain data and never writes. Every response is untrusted:
   * only https://api.github.com is ever contacted, the `Link` header may not point anywhere
     else, redirects are refused and the token is never sent to a second host;
-  * JSON with a repeated key, a wrong type or a missing field fails the whole listing;
+  * JSON with a repeated key, a wrong type or a missing field fails the whole listing, and so does
+    a release whose own API URL does not name the product's repository;
   * a release whose own content breaks a rule (asset name, upload state, download URL) is
     reported as rejected and does not stop the other releases;
   * a tag outside the supported shapes is ignored and reported, and never reaches a URL.
@@ -302,6 +303,14 @@ def _typed(item: dict[str, Any], key: str, kind: type) -> Any:
     return value
 
 
+def _require_own_release(repo: str, item: dict[str, Any]) -> None:
+    """A release's own API URL names this repository, whichever form the page links take."""
+    prefix = f"{API_BASE}/repos/{GITHUB_OWNER}/{repo}/releases/"
+    url: str = _typed(item, "url", str)
+    if not re.fullmatch(re.escape(prefix) + r"[0-9]{1,20}", url):
+        raise FeedError("a listed release belongs to another repository")
+
+
 def download_url(repo: str, tag: str, name: str) -> str:
     """The one URL GitHub serves a release asset from; the caller has checked the three parts."""
     return f"https://github.com/{GITHUB_OWNER}/{repo}/releases/download/{tag}/{name}"
@@ -364,6 +373,7 @@ def _parse_page(
         if _typed(item, "draft", bool):
             continue
         tag: str = _typed(item, "tag_name", str)
+        _require_own_release(repo, item)
         short = len(tag) <= MAX_TAG_LENGTH
         if short and config.FINAL_TAG.fullmatch(tag):
             kind: Literal["final", "prerelease"] = "final"

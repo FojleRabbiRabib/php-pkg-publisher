@@ -4,9 +4,13 @@
 
 from __future__ import annotations
 
+import re
 import urllib.request
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, Final
+
+KEY_ID: Final = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{40}(?![0-9A-Fa-f])")
+HOST_PATH: Final = re.compile(r"(?<![\w/.])/[^\s'\":,;)(\]\[]+")
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -16,9 +20,14 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def redact(text: str) -> str:
+    """Replace host paths and key fingerprints; do it before any cut, which could split one."""
+    return KEY_ID.sub("<id>", HOST_PATH.sub("<path>", text))
+
+
 def safe(text: str) -> str:
     """Return untrusted text as a short ASCII literal that is safe to put in a message."""
-    return ascii(text)[:80]
+    return ascii(redact(text))[:80]
 
 
 class DuplicateKey(ValueError):

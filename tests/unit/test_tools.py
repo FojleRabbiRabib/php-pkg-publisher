@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import signal
+import subprocess
 import time
 from pathlib import Path
 
@@ -101,6 +102,50 @@ def test_run_stops_what_a_flooding_program_started(tmp_path: Path) -> None:
         run([Path("/bin/sh"), "-c", script], home=tmp_path, timeout=20)
     time.sleep(1.5)
     assert not marker.exists()
+
+
+def test_run_stops_what_a_program_started_when_the_run_is_told_to_stop(tmp_path: Path) -> None:
+    marker = tmp_path / "survived"
+    script = f"(sleep 1; touch {marker}) & sleep 30"
+
+    def stop(number: int, frame: object) -> None:
+        raise SystemExit(143)
+
+    before = signal.signal(signal.SIGALRM, stop)
+    signal.setitimer(signal.ITIMER_REAL, 0.3)
+    started = time.monotonic()
+    try:
+        with pytest.raises(SystemExit):
+            run([Path("/bin/sh"), "-c", script], home=tmp_path, timeout=20)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, before)
+    assert time.monotonic() - started < 5
+    time.sleep(1.5)
+    assert not marker.exists()
+
+
+def test_a_stop_after_the_program_was_reaped_does_not_signal_its_old_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The process id of a reaped program may already belong to another process."""
+    calls: list[int] = []
+    killpg = os.killpg
+    wait = subprocess.Popen.wait
+
+    def spy(group: int, number: int) -> None:
+        calls.append(group)
+        killpg(group, number)
+
+    def stopped_after_the_wait(self: subprocess.Popen[bytes], *args: float) -> int:
+        wait(self, *args)
+        raise SystemExit(143)
+
+    monkeypatch.setattr(os, "killpg", spy)
+    monkeypatch.setattr(subprocess.Popen, "wait", stopped_after_the_wait)
+    with pytest.raises(SystemExit):
+        run([Path("/bin/true")], home=tmp_path)
+    assert len(calls) == 1  # the one kill of the finished program's group, made before the wait
 
 
 def test_run_stops_what_a_finished_program_left_behind(tmp_path: Path) -> None:

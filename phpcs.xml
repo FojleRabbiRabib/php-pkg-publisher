@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright 2026 Fojle Rabbi (Rabib) -->
-<ruleset name="php-pkg-publisher">
+<ruleset name="PHP Package Publisher">
     <description>PSR-12 for the webhook receiver.</description>
     <file>web</file>
     <arg name="colors"/>

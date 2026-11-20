@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Fojle Rabbi (Rabib)
 version: 2
 
 updates:
@@ -8,6 +10,10 @@ updates:
     schedule:
       interval: weekly
   - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: composer
     directory: /
     schedule:
       interval: weekly
