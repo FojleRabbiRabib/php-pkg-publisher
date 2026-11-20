@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Fojle Rabbi (Rabib)
 mypy==2.4.1
 pre-commit==4.6.2
 pre-commit-hooks==6.0.0

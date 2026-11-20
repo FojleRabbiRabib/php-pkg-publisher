@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Fojle Rabbi (Rabib)
 name: Set up the test environment
 description: Python 3.10 with the hash-pinned development tools, and the verification tools the tests run.
 

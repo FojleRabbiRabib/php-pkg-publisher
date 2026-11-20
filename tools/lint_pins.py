@@ -6,8 +6,13 @@
 Checks, over the repository under ROOT:
   * every `uses:` in a workflow job or step, and in a local composite action, is a local
     path, a 40-hex commit SHA reference, or a `docker://` reference pinned by digest;
+  * a local path is followed: it must stay inside ROOT and exist, and the composite action
+    it names is checked too, wherever it lives (a skipped directory included);
   * every job `container:` image, `services:` image and Dockerfile `FROM` is pinned by
     digest;
+  * a `run:` script installs with `pip install` only together with `--require-hashes`, and
+    never pipes `curl` or `wget` into a shell (a text match over the script's commands: it
+    catches mistakes, not a deliberate bypass);
   * no workflow triggers on `pull_request_target`, requests `id-token: write` or grants
     `permissions: write-all`;
   * every workflow declares top-level `permissions:`;
@@ -17,6 +22,9 @@ Checks, over the repository under ROOT:
 
 Workflows and actions are parsed as YAML, so quoting, flow mappings, comments and values on
 the following line are handled by the parser, not by pattern matching.
+
+Only the top level of ROOT skips directories (`.git`, `.venv`, `vendor`, caches): a directory
+of that name anywhere lower is scanned, and `.github` is never skipped.
 """
 
 from __future__ import annotations
@@ -34,6 +42,14 @@ from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
 LOCAL_HOOK_LANGUAGES = frozenset({"script", "system", "unsupported", "unsupported_script"})
+PIP_INSTALL = re.compile(r"\bpip3?\s+install\b")
+REQUIRE_HASHES = re.compile(r"(?<!\S)--require-hashes(?!\S)")
+INLINE_COMMENT = re.compile(r"\s#.*$")
+DOWNLOAD_TO_SHELL = re.compile(
+    r"\b(?:curl|wget)\b[^|]*\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:(?:\S*/)?env\s+(?:\S+=\S+\s+)*)?"
+    r"(?:\S*/)?(?:ba|da|z|k)?sh\b"
+    r"|(?<![\w.-])(?:ba|da|z|k)?sh\s+(?:-\w+\s+)*[\"']?(?:<|\$)\(\s*(?:curl|wget)\b"
+)
 SHA_REF = re.compile(r"@[0-9a-f]{40}$")
 DIGEST_REF = re.compile(r"@sha256:[0-9a-f]{64}$")
 FROM_LINE = re.compile(r"^\s*FROM\s+(?:--\S+\s+)*(?P<image>\S+)(?:\s+AS\s+(?P<alias>\S+))?", re.I)
@@ -50,6 +66,15 @@ class Finding:
 
     def __str__(self) -> str:
         return f"{self.path}:{self.line}: {self.message}"
+
+
+@dataclass(frozen=True)
+class LocalUse:
+    """A `uses: ./path` reference, to be followed once the file that holds it is read."""
+
+    path: Path
+    line: int
+    value: str
 
 
 def _scalar(node: Node) -> str | None:
@@ -73,9 +98,12 @@ def _line(node: Node) -> int:
     return int(node.start_mark.line) + 1
 
 
-def _check_uses(path: Path, node: Node, findings: list[Finding]) -> None:
+def _check_uses(path: Path, node: Node, findings: list[Finding], local: list[LocalUse]) -> None:
     value = _scalar(node)
-    if value is None or value.startswith("./"):
+    if value is None:
+        return
+    if value.startswith("./"):
+        local.append(LocalUse(path, _line(node), value))
         return
     if value.startswith("docker://"):
         if not DIGEST_REF.search(value):
@@ -96,17 +124,48 @@ def _check_image(path: Path, node: Node, findings: list[Finding]) -> None:
         findings.append(Finding(path, _line(node), f"image {value} is not pinned by digest"))
 
 
-def _check_steps(path: Path, steps: Node | None, findings: list[Finding]) -> None:
+def _commands(script: str) -> Iterator[str]:
+    """The script's commands: line continuations and a trailing `|` or `&&` join the next line."""
+    joined = re.sub(r"\\\n|(?<=[|&])\s*\n", " ", script)
+    for line in joined.splitlines():
+        stripped = INLINE_COMMENT.sub("", line.strip())
+        if stripped and not stripped.startswith("#"):
+            yield stripped
+
+
+def _check_run(path: Path, node: Node, findings: list[Finding]) -> None:
+    script = _scalar(node)
+    if script is None:
+        return
+    for command in _commands(script):
+        for part in re.split(r"&&|\|\||;|\|", command):
+            if PIP_INSTALL.search(part) and not REQUIRE_HASHES.search(part):
+                findings.append(
+                    Finding(
+                        path, _line(node), "pip install without --require-hashes in a run script"
+                    )
+                )
+        if DOWNLOAD_TO_SHELL.search(command):
+            findings.append(
+                Finding(path, _line(node), "a download is piped into a shell in a run script")
+            )
+
+
+def _check_steps(
+    path: Path, steps: Node | None, findings: list[Finding], local: list[LocalUse]
+) -> None:
     for step in _items(steps):
         for key, value in _pairs(step):
             if key == "uses":
-                _check_uses(path, value, findings)
+                _check_uses(path, value, findings, local)
+            elif key == "run":
+                _check_run(path, value, findings)
 
 
-def _check_job(path: Path, job: Node, findings: list[Finding]) -> None:
+def _check_job(path: Path, job: Node, findings: list[Finding], local: list[LocalUse]) -> None:
     for key, value in _pairs(job):
         if key == "uses":
-            _check_uses(path, value, findings)
+            _check_uses(path, value, findings, local)
         elif key == "container":
             if isinstance(value, ScalarNode):
                 _check_image(path, value, findings)
@@ -120,7 +179,7 @@ def _check_job(path: Path, job: Node, findings: list[Finding]) -> None:
                     if inner_key == "image":
                         _check_image(path, inner, findings)
         elif key == "steps":
-            _check_steps(path, value, findings)
+            _check_steps(path, value, findings, local)
 
 
 def _check_permissions(path: Path, node: Node, findings: list[Finding]) -> None:
@@ -157,7 +216,7 @@ def _load(path: Path, findings: list[Finding]) -> Node | None:
     return root
 
 
-def lint_workflow(path: Path) -> list[Finding]:
+def lint_workflow(path: Path, local: list[LocalUse]) -> list[Finding]:
     findings: list[Finding] = []
     root = _load(path, findings)
     if root is None:
@@ -175,14 +234,14 @@ def lint_workflow(path: Path) -> list[Finding]:
                     )
         elif key == "jobs":
             for _job_id, job in _pairs(value):
-                _check_job(path, job, findings)
+                _check_job(path, job, findings, local)
     _check_permissions(path, root, findings)
     if not has_permissions:
         findings.append(Finding(path, 1, "no top-level permissions: block"))
     return findings
 
 
-def lint_action(path: Path) -> list[Finding]:
+def lint_action(path: Path, local: list[LocalUse]) -> list[Finding]:
     findings: list[Finding] = []
     root = _load(path, findings)
     if root is None:
@@ -193,7 +252,7 @@ def lint_action(path: Path) -> list[Finding]:
             continue
         for runs_key, runs_value in _pairs(value):
             if runs_key == "steps":
-                _check_steps(path, runs_value, findings)
+                _check_steps(path, runs_value, findings, local)
             elif runs_key == "image" and (_scalar(runs_value) or "").startswith("docker://"):
                 _check_image(path, runs_value, findings)
     _check_permissions(path, root, findings)
@@ -287,24 +346,52 @@ def _is_action(name: str) -> bool:
 
 
 def _files(root: Path) -> Iterator[Path]:
+    """Every file under `root`; only the top level skips the directories of SKIPPED_DIRECTORIES."""
     for directory, subdirectories, names in os.walk(root):
-        subdirectories[:] = sorted(d for d in subdirectories if d not in SKIPPED_DIRECTORIES)
+        if Path(directory) == root:
+            subdirectories[:] = [d for d in subdirectories if d not in SKIPPED_DIRECTORIES]
+        subdirectories.sort()
         for name in sorted(names):
             yield Path(directory) / name
 
 
+def _follow(root: Path, use: LocalUse, linted: set[Path], local: list[LocalUse]) -> list[Finding]:
+    """Check what a local `uses:` names: inside `root`, present, and a checked action."""
+    target = (root / use.value).resolve()
+    if not target.is_relative_to(root.resolve()):
+        return [Finding(use.path, use.line, f"{use.value} leaves the repository")]
+    if target.is_file():
+        return []  # a reusable workflow; the ones under .github/workflows are linted as found
+    if not target.is_dir():
+        return [Finding(use.path, use.line, f"{use.value} does not exist")]
+    actions = [target / name for name in ("action.yml", "action.yaml") if (target / name).is_file()]
+    if not actions:
+        return [Finding(use.path, use.line, f"{use.value} has no action.yml")]
+    findings: list[Finding] = []
+    for action in actions:
+        if action not in linted:
+            linted.add(action)
+            findings.extend(lint_action(action, local))
+    return findings
+
+
 def lint_tree(root: Path) -> list[Finding]:
     findings: list[Finding] = []
+    local: list[LocalUse] = []
+    linted: set[Path] = set()
     workflows = root / ".github" / "workflows"
     for path in _files(root):
         if path.parent == workflows and path.suffix in (".yml", ".yaml"):
-            findings.extend(lint_workflow(path))
+            findings.extend(lint_workflow(path, local))
         elif _is_action(path.name):
-            findings.extend(lint_action(path))
+            linted.add(path.resolve())
+            findings.extend(lint_action(path, local))
         elif path.name == ".pre-commit-config.yaml":
             findings.extend(lint_precommit(path))
         elif _is_dockerfile(path.name):
             findings.extend(lint_dockerfile(path))
+    while local:
+        findings.extend(_follow(root, local.pop(0), linted, local))
     return findings
 
 

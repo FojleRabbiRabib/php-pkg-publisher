@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Fojle Rabbi (Rabib)
 # Every hook runs a tool from the hash-pinned development environment (requirements-dev.txt),
 # so local checks and CI use one set of versions. Activate that environment before committing.
 minimum_pre_commit_version: "4.6.2"

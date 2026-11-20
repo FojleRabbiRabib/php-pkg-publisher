@@ -288,6 +288,16 @@ All notable changes to this project are documented here. The format follows
 - Security notes: the origin must accept Cloudflare only for the webhook throttle to trust
   `CF-Connecting-IP`, and what a forged address can do (real deliveries refused with 429 for as long
   as the forged requests continue, so publishing waits for the daily run).
+- The pin lint follows a local `uses: ./path` and checks the action it names wherever it lives. It
+  fails on a path that leaves the repository or does not exist, on a `run:` script that runs
+  `pip install` without `--require-hashes`, and on one that pipes `curl` or `wget` into a shell.
+- Dependabot also watches the Composer dependencies, and a test fails when a dependency file, a
+  workflow folder or a local action has no matching entry.
+- A test makes the PHP versions, architectures and distributions that several files repeat (the
+  client script, the outside watch, the container helpers, the CI matrix, the install guide) agree
+  with `publisher/config.py` and the container image list.
+- Every tracked file that can hold a comment now carries the licence header, and a test fails when
+  one does not; the files that cannot are listed with the reason.
 
 ### Changed
 
@@ -312,6 +322,8 @@ All notable changes to this project are documented here. The format follows
 - The install guide explains `setup.sh` and what a second run does on dnf: it turns on the section
   of each PHP it finds installed, so a section turned off by hand in the repository file is turned
   on again.
+- The pin lint skips `vendor`, `node_modules`, `.venv` and the caches only at the top of the
+  repository; a folder of that name lower down is checked, and `.github` is never skipped.
 - The key rotation step now says to switch to the new subkey at least 21 days before the old one
   expires, not 14: the publisher refuses a subkey with 14 days or fewer left, so 14 days left no
   margin.

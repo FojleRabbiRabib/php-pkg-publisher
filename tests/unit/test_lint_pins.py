@@ -20,6 +20,13 @@ def _workflow(root: Path, body: str, name: str = "ci.yml") -> Path:
     return path
 
 
+def _action(directory: Path, uses: str) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "action.yml"
+    path.write_text(f"runs:\n  using: composite\n  steps:\n    - uses: {uses}\n", encoding="utf-8")
+    return path
+
+
 def _messages(root: Path) -> list[str]:
     return [finding.message for finding in lint_pins.lint_tree(root)]
 
@@ -29,6 +36,7 @@ def _jobs(body: str) -> str:
 
 
 def test_fully_pinned_workflow_passes(tmp_path: Path) -> None:
+    _action(tmp_path / "local", f"actions/checkout@{SHA}")
     _workflow(
         tmp_path,
         "# never grant id-token: write\n"
@@ -106,6 +114,89 @@ def test_expression_built_image_is_rejected_with_a_clear_message(tmp_path: Path)
     assert _messages(tmp_path) == [
         "image ${{ matrix.image }} is built from an expression; inline it"
     ]
+
+
+def _run_step(script: str) -> str:
+    indented = "".join(f"          {line}\n" for line in script.splitlines())
+    return f"    steps:\n      - run: |\n{indented}"
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "python -m pip install --require-hashes --no-deps -r requirements-dev.txt",
+        "pip install \\\n  --require-hashes -r requirements-dev.txt",
+        "pip install --require-hashes -r a.txt # pip install without it would fail",
+        "curl https://example.invalid/x -o x # | sh",
+        'mash -c "$(curl https://example.invalid/x)"',
+        "# pip install anything\ncurl --fail --output cosign https://example.invalid/cosign",
+        "curl --fail --output tool https://example.invalid/tool\nsh ./tool.sh",
+        "echo 'curl | sh'; wget -qO- https://example.invalid/x > x",
+        "echo pipeline | tr a b",
+    ],
+)
+def test_run_scripts_that_install_with_hashes_or_only_download_pass(
+    tmp_path: Path, script: str
+) -> None:
+    _workflow(tmp_path, _jobs(_run_step(script)))
+    assert _messages(tmp_path) == ["a download is piped into a shell in a run script"] * (
+        "'curl | sh'" in script
+    )
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "pip install requests",
+        "pip3 install -r requirements.txt",
+        "python -m pip install --upgrade pip",
+        "sudo pip install --require-hashes -r a.txt && pip install b",
+        "pip install \\\n  requests",
+        "pip install requests # --require-hashes",
+        "pip install requests --no-require-hashes",
+        "pip install requests --require-hashes-off",
+    ],
+)
+def test_pip_install_without_require_hashes_is_rejected(tmp_path: Path, script: str) -> None:
+    _workflow(tmp_path, _jobs(_run_step(script)))
+    assert _messages(tmp_path) == ["pip install without --require-hashes in a run script"]
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "curl https://example.invalid/i.sh | sh",
+        "curl -fsSL https://example.invalid/i.sh | bash",
+        "wget -qO- https://example.invalid/i.sh | sudo bash",
+        "curl -fsSL https://example.invalid/i.sh | sudo -E sh -s --",
+        "curl -fsSL https://example.invalid/i.sh \\\n  | bash",
+        "curl -fsSL https://example.invalid/i.sh |\n  sh",
+        "curl -fsSL https://example.invalid/i.sh | /bin/sh",
+        "curl -fsSL https://example.invalid/i.sh | /usr/bin/env bash",
+        "curl -fsSL https://example.invalid/i.sh | env A=1 bash",
+        "curl -fsSL https://example.invalid/i.sh | sudo /bin/bash",
+        'bash -c "$(curl -fsSL https://example.invalid/i.sh)"',
+        'sh -c "$(wget -qO- https://example.invalid/i.sh)"',
+        '/bin/bash -c "$(curl -fsSL https://example.invalid/i.sh)"',
+        "sh <(curl -fsSL https://example.invalid/i.sh)",
+    ],
+)
+def test_a_download_piped_into_a_shell_is_rejected(tmp_path: Path, script: str) -> None:
+    _workflow(tmp_path, _jobs(_run_step(script)))
+    assert _messages(tmp_path) == ["a download is piped into a shell in a run script"]
+
+
+def test_run_rules_apply_in_a_composite_action_too(tmp_path: Path) -> None:
+    (tmp_path / "action.yml").write_text(
+        "runs:\n  using: composite\n  steps:\n    - shell: bash\n      run: pip install requests\n",
+        encoding="utf-8",
+    )
+    assert _messages(tmp_path) == ["pip install without --require-hashes in a run script"]
+
+
+def test_a_run_value_that_is_not_a_string_is_ignored(tmp_path: Path) -> None:
+    _workflow(tmp_path, _jobs("    steps:\n      - run: [pip, install, requests]\n"))
+    assert _messages(tmp_path) == []
 
 
 @pytest.mark.parametrize(
@@ -202,11 +293,70 @@ def test_dockerfile_name_variants_are_scanned(tmp_path: Path, name: str) -> None
     assert _messages(tmp_path) == ["FROM alpine:3.22 is not pinned by digest"]
 
 
-def test_vendored_and_environment_directories_are_skipped(tmp_path: Path) -> None:
+def test_vendored_and_environment_directories_are_skipped_at_the_top_level_only(
+    tmp_path: Path,
+) -> None:
     for skipped in (".venv", "vendor", "node_modules", ".git"):
         (tmp_path / skipped).mkdir()
         (tmp_path / skipped / "Dockerfile").write_text("FROM alpine:3.22\n", encoding="utf-8")
     assert _messages(tmp_path) == []
+    # the same names lower down are ordinary directories
+    for nested in ("src/vendor", "src/node_modules", "src/.venv", ".github/vendor"):
+        (tmp_path / nested).mkdir(parents=True)
+        (tmp_path / nested / "Dockerfile").write_text("FROM alpine:3.22\n", encoding="utf-8")
+    assert _messages(tmp_path) == ["FROM alpine:3.22 is not pinned by digest"] * 4
+
+
+def test_an_action_under_a_vendor_directory_inside_github_is_checked(tmp_path: Path) -> None:
+    _action(tmp_path / ".github" / "actions" / "vendor" / "x", "actions/checkout@v4")
+    assert _messages(tmp_path) == ["actions/checkout@v4 is not pinned to a commit SHA"]
+
+
+def test_a_local_action_in_a_skipped_directory_is_followed_and_checked(tmp_path: Path) -> None:
+    _action(tmp_path / "vendor" / "x", "actions/checkout@v4")
+    assert _messages(tmp_path) == []  # nothing names it
+    _workflow(tmp_path, _jobs("    steps:\n      - uses: ./vendor/x\n"))
+    assert _messages(tmp_path) == ["actions/checkout@v4 is not pinned to a commit SHA"]
+
+
+def test_a_local_action_is_followed_through_another_and_checked_once(tmp_path: Path) -> None:
+    _action(tmp_path / "vendor" / "outer", "./vendor/inner")
+    _action(tmp_path / "vendor" / "inner", "actions/checkout@v4")
+    _workflow(
+        tmp_path,
+        _jobs("    steps:\n      - uses: ./vendor/outer\n      - uses: ./vendor/inner/\n"),
+    )
+    assert _messages(tmp_path) == ["actions/checkout@v4 is not pinned to a commit SHA"]
+
+
+def test_a_local_action_the_walk_already_checked_is_not_checked_again(tmp_path: Path) -> None:
+    _action(tmp_path / ".github" / "actions" / "x", "actions/checkout@v4")
+    _workflow(tmp_path, _jobs("    steps:\n      - uses: ./.github/actions/x\n"))
+    assert _messages(tmp_path) == ["actions/checkout@v4 is not pinned to a commit SHA"]
+
+
+def test_a_local_reference_that_leaves_the_repository_is_refused(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    (tmp_path / "outside").mkdir()
+    _workflow(root, _jobs("    steps:\n      - uses: ./../outside\n"))
+    assert _messages(root) == ["./../outside leaves the repository"]
+
+
+def test_a_local_reference_to_nothing_or_to_a_directory_without_an_action_is_refused(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "empty").mkdir()
+    _workflow(tmp_path, _jobs("    steps:\n      - uses: ./missing\n      - uses: ./empty\n"))
+    assert _messages(tmp_path) == ["./missing does not exist", "./empty has no action.yml"]
+
+
+def test_a_local_reusable_workflow_only_has_to_exist(tmp_path: Path) -> None:
+    _workflow(tmp_path, f"{HEADER}jobs: {{}}\n", "shared.yml")
+    _workflow(tmp_path, f"{HEADER}jobs:\n  a:\n    uses: ./.github/workflows/shared.yml\n")
+    assert _messages(tmp_path) == []
+    _workflow(tmp_path, f"{HEADER}jobs:\n  a:\n    uses: ./.github/workflows/gone.yml\n")
+    assert _messages(tmp_path) == ["./.github/workflows/gone.yml does not exist"]
 
 
 def _precommit(root: Path, body: str) -> None:

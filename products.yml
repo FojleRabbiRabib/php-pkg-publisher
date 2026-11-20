@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Fojle Rabbi (Rabib)
 # Shipped products only. Every entry needs `repo`, `extension`, `php`, `arch` and `ts`; none has
 # a default, and the loader rejects a product without `ts`. Quote every version ("8.3").
 # `repo` is the lowercase GitHub repository name; `extension` is the name inside the package

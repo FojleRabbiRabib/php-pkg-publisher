@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Fojle Rabbi (Rabib)
 name: Platform watch
 
 # The outside check of the public site, from a runner that shares nothing with the publishing host.
