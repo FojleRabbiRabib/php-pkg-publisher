@@ -7,7 +7,7 @@
         "php": ">=8.3"
     },
     "require-dev": {
-        "phpstan/phpstan": "2.3.5",
+        "phpstan/phpstan": "2.3.6",
         "squizlabs/php_codesniffer": "4.0.4"
     },
     "config": {
