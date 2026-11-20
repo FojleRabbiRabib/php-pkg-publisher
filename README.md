@@ -44,7 +44,7 @@ others.
 | `keyring/` | The sources of the two keyring packages, `rabib-archive-keyring` (apt) and `rabib-release` (dnf): a spec template and the Debian copyright file. `tools/build_keyring.py` builds both from a public certificate; the keys are not in this repository |
 | `setup.sh` | The client setup script (POSIX sh, run as root): reads the key out of the keyring package and prints its fingerprint before the package is installed (`--fingerprint` stops it when the key differs), then installs the package, writes the apt sources file or the dnf repository file and refreshes the indexes |
 | `docs/` | The manuals: install guide, runbook and security notes. Every command block of the install guide is run on a real `apt` or `dnf` by the container layer, and the runbook and security notes are checked against the code they quote |
-| `tools/` | Repository tooling: the pin lint (`python tools/lint_pins.py [root]`) and the keyring builder (`python tools/build_keyring.py --help`) |
+| `tools/` | Repository tooling: the pin lint (`python tools/lint_pins.py [root]`), the keyring builder (`python tools/build_keyring.py --help`) and the release notes of a tag (`python tools/release_notes.py vX.Y.Z`) |
 | `tests/` | Unit tests, and the negative layer (`tests/negative/`: whole passes over throwaway keys and real packages that must fail closed, read back with `gpgv`); and the container layer (`tests/container/`, `pytest -m container`: a real `apt` or `dnf` of each distribution installs, upgrades and follows a rollback, and refuses tampered metadata, and installs the built keyring packages and trusts the key file they install) |
 
 ## Development

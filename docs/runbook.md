@@ -292,6 +292,32 @@ get a chat message too, add `--notify` with the repository secrets `TELEGRAM_CHA
 `TELEGRAM_BOT_TOKEN` set in the environment (in the workflow they come from the repository's
 Actions secrets); without them the failed run is the notice.
 
+## Releasing
+
+A release is a signed tag on `main`:
+
+1. In `CHANGELOG.md`, move the entries of `## [Unreleased]` under a new
+   `## [<version>] - YYYY-MM-DD` heading, and merge that change to `main`.
+2. Check the notes the release will carry. This fails in the same way the workflow does:
+
+   ```sh
+   python3 tools/release_notes.py v<version>
+   ```
+
+3. Tag the merge commit, signed, and push the tag:
+
+   ```sh
+   git tag -s v<version> -m "Release v<version>"
+   git push origin v<version>
+   ```
+
+The `Release` workflow starts on the pushed tag, runs every CI gate, and then makes the GitHub
+Release titled `PHP Package Publisher – v<version>` with those notes. It makes no release when
+the tag is not `vX.Y.Z` (no leading zeros), is not an annotated tag, is not on `main`, when the
+changelog has no dated section for it, or when `[Unreleased]` still has entries. It does not
+deploy, and it does not check the tag's signature: the host does that before it uses a tag, as
+described below.
+
 ## Deploying a change
 
 The host runs a signed tag, deployed by hand, never an automatic pull:

@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Fojle Rabbi (Rabib)
+name: Release
+
+# A pushed tag runs every CI gate, then makes the GitHub Release from the changelog. Nothing here
+# deploys: the host takes a tag only after it has checked the tag's signature itself.
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+jobs:
+  ci:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      # The whole history, so that the check below can tell whether the tag is on main.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # The tag is checked first by the tool: a ref name is used only after it has passed.
+      - name: Take the notes from the changelog
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 tools/release_notes.py "$TAG" > "$RUNNER_TEMP/notes.md"
+      - name: Check the tag
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # an annotated tag is a tag object; a lightweight one points at the commit itself
+          test "$(gh api "repos/$GH_REPO/git/ref/tags/$TAG" --jq .object.type)" = tag
+          git merge-base --is-ancestor HEAD origin/main
+      - name: Create the release
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$TAG" --verify-tag --title "PHP Package Publisher – $TAG" \
+            --notes-file "$RUNNER_TEMP/notes.md"

@@ -298,6 +298,13 @@ All notable changes to this project are documented here. The format follows
   with `publisher/config.py` and the container image list.
 - Every tracked file that can hold a comment now carries the licence header, and a test fails when
   one does not; the files that cannot are listed with the reason.
+- Release workflow (`release.yml`): a pushed `v*` tag runs every CI gate through the same
+  workflow, then makes the GitHub Release titled `PHP Package Publisher – vX.Y.Z` with the notes
+  of that version from this changelog. Only the release job may write. It makes no release when
+  the tag is not `vX.Y.Z` (no leading zeros), is not annotated, is not on `main`, when the
+  changelog has no dated section for the version, or when `[Unreleased]` still has entries
+  (`tools/release_notes.py` decides the first and the last two). It does not check the tag's
+  signature, which needs the pinned key; the runbook has the steps to cut a release.
 
 ### Changed
 

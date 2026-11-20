@@ -244,6 +244,21 @@ def test_the_outside_watch_section_names_what_the_workflow_and_the_script_use() 
     assert "made or served more than 4 days ago" in TEXT
 
 
+def test_the_release_section_names_what_the_workflow_and_the_tool_do() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    assert "name: Release" in workflow
+    assert "`Release` workflow" in TEXT
+    en_dash = chr(0x2013)
+    assert f"PHP Package Publisher {en_dash} $TAG" in workflow
+    assert f"titled `PHP Package Publisher {en_dash} v<version>`" in FLAT
+    assert (ROOT / "tools" / "release_notes.py").is_file()
+    assert "python3 tools/release_notes.py v<version>" in TEXT
+    assert 'git tag -s v<version> -m "Release v<version>"' in TEXT
+    assert "git push origin v<version>" in TEXT
+    assert "git merge-base --is-ancestor HEAD origin/main" in workflow
+    assert "does not check the tag's signature" in FLAT
+
+
 def test_the_rotation_section_names_the_key_drill_that_exists() -> None:
     assert "pytest -m container tests/container/test_key_drill.py" in TEXT
     assert (ROOT / "tests" / "container" / "test_key_drill.py").is_file()
