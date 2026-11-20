@@ -40,7 +40,7 @@ jobs:
         run: mypy
       - name: PHP receiver
         run: |
-          php -l web/hooks/sync.php
+          php -l web/sync.php
           vendor/bin/phpcs
           vendor/bin/phpstan analyse --no-progress
       - name: Shell

@@ -128,7 +128,7 @@ All notable changes to this project are documented here. The format follows
   A start limit of five in ten minutes stops a failed run's restored nudge from restarting the
   publisher for ever. The notifier gets `%i`, because `%I` would turn the dashes of the unit name
   into slashes.
-- Webhook receiver `web/hooks/sync.php` (PHP 8.3, one file, no dependencies): answers a fixed
+- Webhook receiver `web/sync.php` (PHP 8.3, one file, no dependencies): answers a fixed
   status with an empty body, checks in order the method (405), a per-address throttle of 20 posts
   a minute (429), `Content-Length` and a 1 MiB body cap (413), the `X-Hub-Signature-256` HMAC
   (401), the event and action (ping, other events and other actions get 200), the delivery GUID

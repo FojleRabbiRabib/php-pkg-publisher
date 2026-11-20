@@ -135,7 +135,7 @@ def test_the_site_layout_the_rollback_and_rotation_steps_describe_is_the_codes(
     assert "shows the primary key as a stub (`sec#`)" in TEXT
     assert "runuser -u <publisher-user> -- gpg --homedir <signing-home> --list-secret-keys" in TEXT
     assert "/etc/php-pkg-publisher-webhook/secret" in TEXT
-    assert "/etc/php-pkg-publisher-webhook/secret" in (ROOT / "web/hooks/sync.php").read_text(
+    assert "/etc/php-pkg-publisher-webhook/secret" in (ROOT / "web/sync.php").read_text(
         encoding="utf-8"
     )
 
@@ -153,7 +153,7 @@ def test_the_stored_file_section_quotes_what_the_code_says() -> None:
 
 
 def test_the_receiver_reasons_the_runbook_lists_are_the_codes() -> None:
-    source = (ROOT / "web" / "hooks" / "sync.php").read_text(encoding="utf-8")
+    source = (ROOT / "web" / "sync.php").read_text(encoding="utf-8")
     reasons = re.findall(r"fail\('([a-z-]+)'\)", source)
     assert sorted(reasons) == [
         "guid-directory-unusable",
@@ -203,7 +203,7 @@ def test_the_unit_section_quotes_what_the_units_and_the_code_say() -> None:
 
 
 def test_the_throttle_note_quotes_the_receivers_numbers_and_header() -> None:
-    source = (ROOT / "web" / "hooks" / "sync.php").read_text(encoding="utf-8")
+    source = (ROOT / "web" / "sync.php").read_text(encoding="utf-8")
     (limit,) = re.findall(r"const THROTTLE_LIMIT = (\d+);", source)
     (window,) = re.findall(r"const THROTTLE_WINDOW = (\d+);", source)
     assert f"{limit} requests in {window} seconds" in SECURITY_FLAT

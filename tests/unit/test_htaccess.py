@@ -22,7 +22,7 @@ def test_the_file_holds_exactly_the_three_rules_in_order() -> None:
     rules = rewrite_rules()
     assert [rule.flags for rule in rules] == ["R=404,L", "L", "R=302,L"]
     assert rules[0].pattern == "^" and rules[0].target == "-"
-    assert (rules[1].pattern, rules[1].target) == ("^hooks/sync$", "hooks/sync.php")
+    assert (rules[1].pattern, rules[1].target) == ("^hooks/sync$", "sync.php")
     assert len(lines) == 5
     assert not any(" [P" in line or "[P]" in line for line in lines)
 
@@ -192,6 +192,7 @@ def test_the_file_pattern_matches_the_asset_name_rule(value: str) -> None:
 @pytest.mark.parametrize(
     "path",
     [
+        "sync.php",
         "hooks/sync.php",
         "a.php",
         "hooks/sync.php/x",

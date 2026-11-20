@@ -399,7 +399,7 @@ def _serving(
     `edits` are (old, new) source replacements, for provoking what a test cannot reach otherwise.
     """
     world = World(tmp_path)
-    source = (ROOT / "web" / "hooks" / "sync.php").read_text(encoding="utf-8")
+    source = (ROOT / "web" / "sync.php").read_text(encoding="utf-8")
     patched = source.replace("/var/lib/php-pkg-publisher/nudge", str(world.nudge_dir)).replace(
         "'/etc/php-pkg-publisher-webhook/secret'", file_literal or f"'{world.secret_file}'"
     )
