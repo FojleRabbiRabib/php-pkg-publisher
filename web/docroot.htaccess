@@ -2,7 +2,7 @@
 # Copyright 2026 Fojle Rabbi (Rabib)
 #
 # The docroot .htaccess of the package site (OpenLiteSpeed, `autoLoadHtaccess` on). Install it as
-# `<docroot>/.htaccess`, owned by the publisher user and read-only to the site user.
+# `<docroot>/.htaccess`, owned by root and read-only to the site user.
 #
 # Three rules, in this order, and nothing else:
 #   1. a request whose raw request line names a .php file, also spelled with percent-escapes

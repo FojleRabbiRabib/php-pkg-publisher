@@ -3,8 +3,8 @@
 How to configure the publisher and the commands you use day to day. It covers what runs on the
 publishing host as the publisher user, and how to start, stop and recover its systemd units; web
 server and CDN steps are host-specific and are not here. Placeholders in angle brackets are yours to fill in:
-`<publisher-user>`, `<site-root>`, `<docroot>`, `<origin-public-ip>`, `<repo>`, `<tag>`,
-`<generation>`.
+`<publisher-user>`, `<site-root>`, `<docroot>`, `<docroot-parent>`, `<origin-public-ip>`, `<repo>`,
+`<tag>`, `<generation>`.
 
 ## What runs
 
@@ -134,7 +134,8 @@ the site; `<site-root>` is outside it.
 One rule decides the layout: the web server's user runs PHP, so it must never be able to change
 anything that runs as the publisher user. Every folder on the path to the code, the settings, the
 state and the signing home is owned by root or by the publisher user and is not writable by the web
-server's user or group; the folders above `<docroot>` must not be writable by them either. Of the
+server's user or group. `<docroot-parent>`, the folder that holds `<docroot>`, is owned by root and
+no one else may write in it. Of the
 publisher's folders, the nudge directory is the only one the web server's group may write.
 `<web-group>` must hold the web server's user and no one else, because its members can read the
 webhook secret. `<site-root>` must be the site path in the service's `ReadWritePaths=`.
@@ -221,21 +222,39 @@ webhook secret. `<site-root>` must be the site path in the service's `ReadWriteP
    ```
 
 7. Put the web files in `<docroot>`. `sync.php` is served as `/hooks/sync` by the rule in
-   `.htaccess`. Root makes the two links once; they point into `<site-root>`, where the publisher
-   flips `current`, so the links never change. `keyring/` holds the two keyring packages, built
-   offline and placed by hand. `install -d` also sets the owner and mode of a folder that already
-   exists. If the check at the end shows that the web server's user can write in the folder above
-   `<docroot>`, it can rename `<docroot>` and put its own files in its place; the signed metadata
-   and the rpm signatures still stop a tampered package, but the redirect rules and the keyring
-   packages are then open to it:
+   `.htaccess`. Root owns every file there: the publisher never writes in `<docroot>` (it flips
+   `current` inside `<site-root>`) and the web server's user only reads. Root makes the two links
+   once; they point into `<site-root>`, so the links never change. `keyring/` holds the two keyring
+   packages, built offline and placed by hand.
+
+   Two locks keep the web server's user from replacing the folder, and with it the redirect rules
+   and the keyring packages: `<docroot-parent>` is owned by root, so nobody else can rename
+   `<docroot>`, and `<docroot>` carries the immutable flag, which stops a rename, a delete and any
+   new entry in it, even by its owner. `<docroot>` must already exist and hold only the site's
+   files: the commands make root the owner of everything in it. The site user can no longer create
+   entries in `<docroot-parent>`, so anything it must write there (logs, caches, uploads) has to
+   live in folders it already owns or somewhere else. The flag needs a file system that supports
+   it (ext4 and xfs do), and a tool
+   that writes into `<docroot>`, such as a certificate client leaving challenge files there, then
+   fails: keep those files elsewhere. To change a file later, clear the flag, change it and set the
+   flag again. A control panel may reset an owner, a mode or the flag when it fixes permissions:
+   run the check below after any panel action.
 
    ```sh
-   install -d -m 0755 -o <publisher-user> -g <web-group> <docroot> <docroot>/keyring
-   install -m 0644 -o <publisher-user> web/docroot.htaccess <docroot>/.htaccess
-   install -m 0644 -o <publisher-user> web/sync.php <docroot>/sync.php
+   chown root:root <docroot-parent>
+   chmod 0755 <docroot-parent>
+   chattr -i <docroot>
+   install -d -m 0755 -o root -g root <docroot> <docroot>/keyring
+   install -m 0644 -o root web/docroot.htaccess <docroot>/.htaccess
+   install -m 0644 -o root web/sync.php <docroot>/sync.php
    ln -s <site-root>/current/apt <docroot>/apt
    ln -s <site-root>/current/rpm <docroot>/rpm
+   chown -hR root:root <docroot>
+   chmod -R go-w,a+rX <docroot>
+   chattr +i <docroot>
    ```
+
+   The two links are made once: on a repeat, leave out the `ln` lines.
 
 8. Install the units, then enable them as in "Starting, stopping and recovering the units":
 
@@ -259,6 +278,18 @@ runuser -u <web-user> -- test -r /var/lib/php-pkg-publisher/state
 runuser -u <web-user> -- test -r /var/lib/php-pkg-publisher/gnupg
 runuser -u <web-user> -- test -r /etc/php-pkg-publisher/github.token
 ```
+
+The flag must show as `i` in the listing of `<docroot>`, and nothing in it may belong to another
+user (the second command must print nothing):
+
+```sh
+lsattr -d <docroot>
+find <docroot> ! -user root -print
+```
+
+As a further limit, set PHP's `open_basedir` for the site to `<docroot>`, the nudge directory, the
+webhook secret folder and `/tmp`: the receiver needs no other path (`/tmp` is for PHP itself), and
+a script that breaks cannot then read or write elsewhere.
 
 ## Day-to-day commands
 

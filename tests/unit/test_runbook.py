@@ -154,9 +154,9 @@ def test_the_host_setup_section_gives_every_file_the_owner_and_mode_it_needs() -
         f"install -m 0644 <certificate-file> {etc}/signing-certificate.asc",
         f"install -m 0600 -o <publisher-user> <token-file> {etc}/github.token",
         f"install -m 0600 -o <publisher-user> <alert-file> {etc}/telegram.conf",
-        "install -m 0644 -o <publisher-user> web/docroot.htaccess <docroot>/.htaccess",
-        "install -m 0644 -o <publisher-user> web/sync.php <docroot>/sync.php",
-        "install -d -m 0755 -o <publisher-user> -g <web-group> <docroot> <docroot>/keyring",
+        "install -m 0644 -o root web/docroot.htaccess <docroot>/.htaccess",
+        "install -m 0644 -o root web/sync.php <docroot>/sync.php",
+        "install -d -m 0755 -o root -g root <docroot> <docroot>/keyring",
     ):
         assert line + "\n" in TEXT, line
     # the secrets are the files the publisher reads only when they are 0600 and its own
@@ -187,6 +187,39 @@ def test_the_host_setup_check_tries_what_the_web_servers_user_may_and_may_not_do
         ("-r", "/etc/php-pkg-publisher/github.token"),
     ]
     assert "namei -l /opt/php-pkg-publisher/publisher/__main__.py <docroot>/sync.php\n" in TEXT
+
+
+def test_the_docroot_is_locked_against_the_web_servers_user_in_the_order_that_works() -> None:
+    # the folder above is root's, the flag is cleared before root writes and set after the last
+    # entry, and everything in the docroot ends up root's
+    (block,) = re.findall(
+        r"^   ```sh\n((?:   chown root:root <docroot-parent>\n).*?)   ```$", TEXT, re.M | re.S
+    )
+    commands = [line.strip() for line in block.splitlines()]
+    assert commands == [
+        "chown root:root <docroot-parent>",
+        "chmod 0755 <docroot-parent>",
+        "chattr -i <docroot>",
+        "install -d -m 0755 -o root -g root <docroot> <docroot>/keyring",
+        "install -m 0644 -o root web/docroot.htaccess <docroot>/.htaccess",
+        "install -m 0644 -o root web/sync.php <docroot>/sync.php",
+        "ln -s <site-root>/current/apt <docroot>/apt",
+        "ln -s <site-root>/current/rpm <docroot>/rpm",
+        "chown -hR root:root <docroot>",
+        "chmod -R go-w,a+rX <docroot>",
+        "chattr +i <docroot>",
+    ]
+    assert "<publisher-user>" not in block
+    assert "lsattr -d <docroot>\nfind <docroot> ! -user root -print\n" in TEXT
+    assert "`<docroot-parent>`, the folder that holds `<docroot>`, is owned by root" in FLAT
+    # the file's own header says who owns it
+    assert "owned by root and read-only to the site user" in (
+        ROOT / "web" / "docroot.htaccess"
+    ).read_text(encoding="utf-8")
+    # open_basedir lists the docroot, the nudge directory and the secret folder (the two paths the
+    # receiver's constants name, tested above)
+    (sentence,) = re.findall(r"set PHP's `open_basedir` for the site to (.*?): the receiver", FLAT)
+    assert sentence == "`<docroot>`, the nudge directory, the webhook secret folder and `/tmp`"
 
 
 def test_the_publisher_user_is_the_one_the_units_run_as() -> None:
@@ -354,6 +387,7 @@ def test_the_notes_hold_only_placeholders_no_fingerprint_and_no_address() -> Non
         "<signing-home>",
         "<site-root>",
         "<docroot>",
+        "<docroot-parent>",
         "<subkey-export>",
         "<plain-export>",
         "<rpm-key-file>",

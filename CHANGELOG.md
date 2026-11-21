@@ -308,9 +308,11 @@ All notable changes to this project are documented here. The format follows
 - Runbook section "Setting up the host" (`docs`): the order of a first set-up as root. Code owned
   by root, settings with their owners and modes, the webhook secret folder, the signing subkey
   import (the passphrase is removed offline, in a throwaway home; the host home must show the
-  primary key as a stub, and a signature is checked with no passphrase), the web files and the two links, and a check of what
-  the web server's user can and cannot do. Tests tie the paths and names it gives to the receiver,
-  the units, `setup.sh` and the docroot rules.
+  primary key as a stub, and a signature is checked with no passphrase), the web files and the two
+  links, and a check of what the web server's user can and cannot do. The docroot is locked against
+  that user: its files are owned by root, the folder above it is owned by root, and the folder
+  carries the immutable flag. Tests tie the paths and names it gives to the receiver, the units,
+  `setup.sh` and the docroot rules.
 
 ### Changed
 
