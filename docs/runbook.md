@@ -3,7 +3,8 @@
 How to configure the publisher and the commands you use day to day. It covers what runs on the
 publishing host as the publisher user, and how to start, stop and recover its systemd units; web
 server and CDN steps are host-specific and are not here. Placeholders in angle brackets are yours to fill in:
-`<publisher-user>`, `<site-root>`, `<origin-public-ip>`, `<repo>`, `<tag>`, `<generation>`.
+`<publisher-user>`, `<site-root>`, `<docroot>`, `<origin-public-ip>`, `<repo>`, `<tag>`,
+`<generation>`.
 
 ## What runs
 
@@ -122,6 +123,142 @@ logs itself, with its own text and a path.
 The receiver also turns `display_errors` off and `log_errors` on for itself, so no PHP error text
 reaches GitHub. A pool that locks `display_errors` on with an admin setting overrides this: do not
 lock it on.
+
+## Setting up the host
+
+Do these steps in order, as root, from a checkout of a tag whose signature you have verified. The
+commands were run on a clean Ubuntu 22.04 container; what the web server and systemd do with the
+result is checked on the staging site, not here. `<docroot>` is the web server's document root for
+the site; `<site-root>` is outside it.
+
+One rule decides the layout: the web server's user runs PHP, so it must never be able to change
+anything that runs as the publisher user. Every folder on the path to the code, the settings, the
+state and the signing home is owned by root or by the publisher user and is not writable by the web
+server's user or group; the folders above `<docroot>` must not be writable by them either. Of the
+publisher's folders, the nudge directory is the only one the web server's group may write.
+`<web-group>` must hold the web server's user and no one else, because its members can read the
+webhook secret. `<site-root>` must be the site path in the service's `ReadWritePaths=`.
+
+1. Install the tools a run needs: `python3-yaml`, `gnupg`, `rpm`, `apt-utils` and `createrepo-c`
+   from the distribution, and `cosign` as described under "Installing cosign" below.
+
+2. Install the code, owned by root and writable by no one else (the `a+rX` keeps it readable
+   whatever root's umask is):
+
+   ```sh
+   install -d -m 0755 -o root -g root /opt/php-pkg-publisher
+   cp -r publisher /opt/php-pkg-publisher/
+   chown -R root:root /opt/php-pkg-publisher
+   chmod -R go-w,a+rX /opt/php-pkg-publisher
+   ```
+
+3. Create the publisher user and its directories, with the commands of the section above.
+
+4. Put the settings in `/etc/php-pkg-publisher/`:
+
+   | File | Owner, mode | Content |
+   |---|---|---|
+   | `products.yml` | root, `0644` | The one in the checkout. |
+   | `exclude.yml` | root, `0644` | `exclude: []`. A missing file stops every run. |
+   | `publisher.yml` | root, `0644` | The settings above, filled in. |
+   | `rpm-signing.asc`, `signing-certificate.asc` | root, `0644` | Public keys only. |
+   | `github.token`, `telegram.conf` | `<publisher-user>`, `0600` | The secrets above. |
+
+   ```sh
+   install -m 0644 products.yml /etc/php-pkg-publisher/products.yml
+   install -m 0644 /dev/null /etc/php-pkg-publisher/exclude.yml
+   printf 'exclude: []\n' > /etc/php-pkg-publisher/exclude.yml
+   install -m 0644 <rpm-key-file> /etc/php-pkg-publisher/rpm-signing.asc
+   install -m 0644 <certificate-file> /etc/php-pkg-publisher/signing-certificate.asc
+   install -m 0600 -o <publisher-user> <token-file> /etc/php-pkg-publisher/github.token
+   install -m 0600 -o <publisher-user> <alert-file> /etc/php-pkg-publisher/telegram.conf
+   ```
+
+5. Store the webhook secret where the receiver reads it. The folder lets the web server's group in
+   and no one else; the secret must hold at least 16 bytes:
+
+   ```sh
+   install -d -m 0750 -o root -g <web-group> /etc/php-pkg-publisher-webhook
+   install -m 0640 -o root -g <web-group> <webhook-secret-file> /etc/php-pkg-publisher-webhook/secret
+   test "$(wc -c < /etc/php-pkg-publisher-webhook/secret)" -ge 16
+   ```
+
+6. Import the signing subkey. The signer needs a subkey with no passphrase, so remove the
+   passphrase on the offline machine, in a throwaway home, and export the subkey alone (the export
+   holds no master secret key). The new export is not protected: keep it private and delete it
+   after the import.
+
+   ```sh
+   gpg --armor --export-secret-subkeys <signing-subkey-fingerprint>! > <subkey-export>
+   export GNUPGHOME="$(mktemp -d)"
+   gpg --import <subkey-export>
+   gpg --change-passphrase <primary-key-fingerprint>
+   gpg --armor --export-secret-subkeys <signing-subkey-fingerprint>! > <plain-export>
+   gpgconf --kill gpg-agent
+   rm -r "$GNUPGHOME"; unset GNUPGHOME
+   ```
+
+   `--change-passphrase` asks for the old passphrase and then the new one: leave the new one
+   empty and confirm. On the host, as the publisher user, import the file from a folder only that
+   user can enter, check, and remove the file and the agent it started. Delete `<subkey-export>`
+   and `<plain-export>` on the offline machine once the host has the key:
+
+   ```sh
+   install -m 0600 -o <publisher-user> <plain-export> /var/lib/php-pkg-publisher/work/subkey.asc
+   runuser -u <publisher-user> -- gpg --homedir <signing-home> --import /var/lib/php-pkg-publisher/work/subkey.asc
+   runuser -u <publisher-user> -- gpg --homedir <signing-home> --list-secret-keys
+   rm /var/lib/php-pkg-publisher/work/subkey.asc
+   runuser -u <publisher-user> -- gpgconf --homedir <signing-home> --kill gpg-agent
+   ```
+
+   The listing must show the primary key as a stub (`sec#`). Then prove that the subkey signs
+   with no passphrase and no pinentry:
+
+   ```sh
+   runuser -u <publisher-user> -- gpg --homedir <signing-home> --batch --pinentry-mode error \
+     --local-user <signing-subkey-fingerprint>! --detach-sign -o /dev/null /dev/null
+   runuser -u <publisher-user> -- gpgconf --homedir <signing-home> --kill gpg-agent
+   ```
+
+7. Put the web files in `<docroot>`. `sync.php` is served as `/hooks/sync` by the rule in
+   `.htaccess`. Root makes the two links once; they point into `<site-root>`, where the publisher
+   flips `current`, so the links never change. `keyring/` holds the two keyring packages, built
+   offline and placed by hand. `install -d` also sets the owner and mode of a folder that already
+   exists. If the check at the end shows that the web server's user can write in the folder above
+   `<docroot>`, it can rename `<docroot>` and put its own files in its place; the signed metadata
+   and the rpm signatures still stop a tampered package, but the redirect rules and the keyring
+   packages are then open to it:
+
+   ```sh
+   install -d -m 0755 -o <publisher-user> -g <web-group> <docroot> <docroot>/keyring
+   install -m 0644 -o <publisher-user> web/docroot.htaccess <docroot>/.htaccess
+   install -m 0644 -o <publisher-user> web/sync.php <docroot>/sync.php
+   ln -s <site-root>/current/apt <docroot>/apt
+   ln -s <site-root>/current/rpm <docroot>/rpm
+   ```
+
+8. Install the units, then enable them as in "Starting, stopping and recovering the units":
+
+   ```sh
+   install -m 0644 deploy/systemd/* /etc/systemd/system/
+   ```
+
+Check the result. The web server's user must read the webhook secret and write in the nudge
+directory, and do nothing else: it must not read the state or the secrets, write in the code or in
+`<docroot>`, or create a link there. Look at the path to each, then try it as that user (`<web-user>`
+is the web server's user; the first two commands must succeed, the others must fail):
+
+```sh
+namei -l /opt/php-pkg-publisher/publisher/__main__.py <docroot>/sync.php
+runuser -u <web-user> -- test -r /etc/php-pkg-publisher-webhook/secret
+runuser -u <web-user> -- test -w /var/lib/php-pkg-publisher/nudge
+runuser -u <web-user> -- test -w /opt/php-pkg-publisher
+runuser -u <web-user> -- test -w <docroot>
+runuser -u <web-user> -- test -w <docroot>/..
+runuser -u <web-user> -- test -r /var/lib/php-pkg-publisher/state
+runuser -u <web-user> -- test -r /var/lib/php-pkg-publisher/gnupg
+runuser -u <web-user> -- test -r /etc/php-pkg-publisher/github.token
+```
 
 ## Day-to-day commands
 
@@ -340,7 +477,8 @@ order:
    publisher user, that
    `runuser -u <publisher-user> -- gpg --homedir <signing-home> --list-secret-keys` lists the new
    subkey and shows the primary key as a stub (`sec#`). Running gpg as root would leave root-owned
-   files in the home.
+   files in the home. Prepare the secret subkey as in step 6 of "Setting up the host": the signer
+   needs one with no passphrase.
 3. At least 120 days after step 1, and at least 21 days before the old subkey expires, change
    `signing.fingerprint` (and `signing.certificate`) to the new subkey. Never sign with both. The
    publisher refuses a subkey that expires within 14 days of a run, so the old subkey is already

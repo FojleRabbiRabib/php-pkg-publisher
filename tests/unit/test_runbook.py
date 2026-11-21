@@ -7,6 +7,7 @@ example loads, every command and unit is named, and the numbers it quotes are th
 from __future__ import annotations
 
 import argparse
+import posixpath
 import re
 from pathlib import Path
 from typing import Final
@@ -104,6 +105,88 @@ def test_the_directories_created_are_the_settings_directories() -> None:
     # the nudge directory is shared with the receiver's group, so it is not in the private loop
     assert "nudge" not in created
     assert "-m 2770 -o <publisher-user> -g <web-group> /var/lib/php-pkg-publisher/nudge" in TEXT
+
+
+def test_the_host_setup_section_names_what_the_code_the_receiver_and_setup_use() -> None:
+    receiver = (ROOT / "web" / "sync.php").read_text(encoding="utf-8")
+    (secret,) = re.findall(r"const SECRET_FILE = '([^']+)';", receiver)
+    (minimum,) = re.findall(r"const MIN_SECRET_BYTES = (\d+);", receiver)
+    assert f"-o root -g <web-group> {posixpath.dirname(secret)}\n" in TEXT
+    assert f"-g <web-group> <webhook-secret-file> {secret}\n" in TEXT
+    assert f'"$(wc -c < {secret})" -ge {minimum}' in TEXT
+    (nudge,) = re.findall(r"const NUDGE_DIR = '([^']+)';", receiver)
+    assert f"-g <web-group> {nudge}\n" in TEXT
+    service = (UNITS / "php-pkg-publisher.service").read_text(encoding="utf-8")
+    assert "WorkingDirectory=/opt/php-pkg-publisher" in service
+    assert "install -d -m 0755 -o root -g root /opt/php-pkg-publisher\n" in TEXT
+    # the docroot files: the rule serves the receiver from sync.php, and the keyring packages
+    # are the ones setup.sh fetches from BASE/keyring/
+    assert "<docroot>/sync.php" in TEXT
+    assert "RewriteRule ^hooks/sync$ sync.php [L]" in (ROOT / "web" / "docroot.htaccess").read_text(
+        encoding="utf-8"
+    )
+    assert "<docroot>/keyring" in TEXT
+    setup = (ROOT / "setup.sh").read_text(encoding="utf-8")
+    assert "APT_PACKAGE='rabib-archive-keyring'" in setup
+    assert "RPM_PACKAGE='rabib-release'" in setup
+    assert '"$BASE/keyring/$1"' in setup
+    # the two links the generation publisher's layout note names
+    assert "`apt -> <root>/current/apt` and `rpm -> <root>/current/rpm`" in (
+        ROOT / "publisher" / "generation.py"
+    ).read_text(encoding="utf-8")
+    assert "ln -s <site-root>/current/apt <docroot>/apt" in TEXT
+    assert "ln -s <site-root>/current/rpm <docroot>/rpm" in TEXT
+    # every file the section installs from the checkout exists
+    for name in ("products.yml", "web/docroot.htaccess", "web/sync.php", "deploy/systemd"):
+        assert (ROOT / name).exists(), name
+        assert name in TEXT, name
+    assert "cp -r publisher /opt/php-pkg-publisher/\n" in TEXT
+    assert (ROOT / "publisher" / "__main__.py").is_file()
+    assert "chmod -R go-w,a+rX /opt/php-pkg-publisher\n" in TEXT
+    assert "install -m 0644 deploy/systemd/* /etc/systemd/system/\n" in TEXT
+
+
+def test_the_host_setup_section_gives_every_file_the_owner_and_mode_it_needs() -> None:
+    etc = "/etc/php-pkg-publisher"
+    for line in (
+        f"install -m 0644 products.yml {etc}/products.yml",
+        f"install -m 0644 <rpm-key-file> {etc}/rpm-signing.asc",
+        f"install -m 0644 <certificate-file> {etc}/signing-certificate.asc",
+        f"install -m 0600 -o <publisher-user> <token-file> {etc}/github.token",
+        f"install -m 0600 -o <publisher-user> <alert-file> {etc}/telegram.conf",
+        "install -m 0644 -o <publisher-user> web/docroot.htaccess <docroot>/.htaccess",
+        "install -m 0644 -o <publisher-user> web/sync.php <docroot>/sync.php",
+        "install -d -m 0755 -o <publisher-user> -g <web-group> <docroot> <docroot>/keyring",
+    ):
+        assert line + "\n" in TEXT, line
+    # the secrets are the files the publisher reads only when they are 0600 and its own
+    assert "`github.token`, `telegram.conf` | `<publisher-user>`, `0600`" in TEXT
+    assert "`products.yml` | root, `0644`" in TEXT
+
+
+def test_the_host_setup_section_strips_the_passphrase_offline_and_proves_the_subkey_signs() -> None:
+    assert "gpg --change-passphrase <primary-key-fingerprint>\n" in TEXT
+    assert "--export-secret-subkeys <signing-subkey-fingerprint>! > <plain-export>\n" in TEXT
+    assert "--pinentry-mode error \\\n     --local-user <signing-subkey-fingerprint>!" in TEXT
+    assert "stub (`sec#`)" in TEXT
+    assert TEXT.count("gpgconf --homedir <signing-home> --kill gpg-agent") == 2
+    assert "rm /var/lib/php-pkg-publisher/work/subkey.asc\n" in TEXT
+    assert "work" in DIRECTORIES
+
+
+def test_the_host_setup_check_tries_what_the_web_servers_user_may_and_may_not_do() -> None:
+    probes = re.findall(r"^runuser -u <web-user> -- test (-[rw]) (\S+)$", TEXT, re.MULTILINE)
+    assert probes == [
+        ("-r", "/etc/php-pkg-publisher-webhook/secret"),
+        ("-w", "/var/lib/php-pkg-publisher/nudge"),
+        ("-w", "/opt/php-pkg-publisher"),
+        ("-w", "<docroot>"),
+        ("-w", "<docroot>/.."),
+        ("-r", "/var/lib/php-pkg-publisher/state"),
+        ("-r", "/var/lib/php-pkg-publisher/gnupg"),
+        ("-r", "/etc/php-pkg-publisher/github.token"),
+    ]
+    assert "namei -l /opt/php-pkg-publisher/publisher/__main__.py <docroot>/sync.php\n" in TEXT
 
 
 def test_the_publisher_user_is_the_one_the_units_run_as() -> None:
@@ -270,6 +353,15 @@ def test_the_notes_hold_only_placeholders_no_fingerprint_and_no_address() -> Non
         "<web-group>",
         "<signing-home>",
         "<site-root>",
+        "<docroot>",
+        "<subkey-export>",
+        "<plain-export>",
+        "<rpm-key-file>",
+        "<certificate-file>",
+        "<alert-file>",
+        "<web-user>",
+        "<token-file>",
+        "<webhook-secret-file>",
         "<origin-public-ip>",
         "<repo>",
         "<tag>",
