@@ -313,6 +313,21 @@ All notable changes to this project are documented here. The format follows
   that user: its files are owned by root, the folder above it is owned by root, and the folder
   carries the immutable flag. Tests tie the paths and names it gives to the receiver, the units,
   `setup.sh` and the docroot rules.
+- Deploy script `deploy/pkg_deploy.py` (`publisher`), run as root with a `git bundle` of a tag on
+  standard input. It deploys a tag only if it is annotated, named `vX.Y.Z`, signed by the pinned
+  release key, carries that same name inside the signed object (`git verify-tag` alone accepts a
+  signed tag under another name) and is not older than the last deploy. It reads only the known
+  files from the signed commit (no link, no submodule), loads `products.yml` with the new loader as
+  the publisher user, copies what it will replace to a backup, stops the units, replaces each file
+  by a rename, replaces itself last, and starts the units again; any failure puts the backup back.
+  It deletes only files its own manifest lists from an earlier deploy and the new tag dropped. A
+  repeat of the tag already in place changes nothing, and a deploy that did not finish blocks the
+  next until `rollback` has run. Local commands: `rollback` (undoes the last deploy and bans its
+  version, so a replay of its signed tag cannot put it back; `allow` lifts the ban), `check`
+  (compares the host with the last deploy: hashes, owners, modes, the docroot flag, the links and
+  the keyring packages) and `record`/`forget` for the hand-placed keyring packages. It prints one
+  fixed code, because a public repository's workflow log is public; the detail goes to the
+  journal.
 
 ### Changed
 
