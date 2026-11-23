@@ -15,14 +15,16 @@ The tests run in order on one host: each starts from what the one before it left
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import pkg_deploy
 import pytest
+import yaml
 from box import Box, Done, docker_available
 from deploykit import GIT, generate_key, run, signed_bundle
 from images import IMAGES
@@ -98,6 +100,7 @@ class Releases:
     third: Release
     stranger: Release
     broken: Release
+    workflow: Release
 
 
 def _tracked_files() -> dict[str, bytes]:
@@ -132,12 +135,17 @@ def releases(keys: dict[str, Path], tmp_path_factory: pytest.TempPathFactory) ->
         third=release("v1.0.2", third),
         stranger=release("v1.0.3", files, signer="other"),
         broken=release("v1.0.4", broken),
+        workflow=release("v1.0.5", files),
     )
 
 
 def _key_text(public: Path) -> str:
     kind, key, *_ = public.read_text(encoding="utf-8").split()
     return f"{kind} {key}"
+
+
+def _known_hosts(server: Path) -> str:
+    return f"[127.0.0.1]:{PORT} {_key_text(server)}\n"
 
 
 def _write_kit(kit: Path, keys: dict[str, Path]) -> None:
@@ -150,9 +158,7 @@ def _write_kit(kit: Path, keys: dict[str, Path]) -> None:
     (kit / "sudoers").write_text(f'deploy ALL=(root) NOPASSWD: {SCRIPT} ""\n', encoding="utf-8")
     forced = f'restrict,command="/usr/bin/sudo {SCRIPT}" {_key_text(keys["client"])}\n'
     (kit / "authorized_keys").write_text(forced, encoding="utf-8")
-    (kit / "known_hosts").write_text(
-        f"[127.0.0.1]:{PORT} {_key_text(keys['server'])}\n", encoding="utf-8"
-    )
+    (kit / "known_hosts").write_text(_known_hosts(keys["server"]), encoding="utf-8")
     (kit / "systemctl").write_text(SYSTEMCTL_STUB, encoding="utf-8")
     (kit / "stub-active-units").write_text(
         "php-pkg-publisher.path\nphp-pkg-publisher.timer\n", encoding="utf-8"
@@ -445,3 +451,137 @@ def test_rollback_puts_the_last_deploy_back_and_bans_its_version(
     assert host.local("check").output == "DEPLOY CHECK PASSED\n"
     done = host.deploy(releases.third)
     assert (done.code, done.output) == (2, "refused: version-denied\n")
+
+
+RELEASE_WORKFLOW: Final = ROOT / ".github" / "workflows" / "release.yml"
+RUNNER_TEMP: Final = "/root/runner"
+
+
+def _expression(text: str, context: dict[str, str]) -> str:
+    """Fill the `${{ ... }}` of a workflow value from a closed table: an unknown one is an error."""
+    return re.sub(r"\$\{\{\s*(.*?)\s*\}\}", lambda found: context[found[1]], text)
+
+
+def _run_deploy_job(
+    host: Host, tag: str, keys: dict[str, Path], *, workdir: str, known_hosts: str
+) -> tuple[int, Done]:
+    """The deploy job's own scripts, read from `release.yml` and run as the runner runs them.
+
+    They run in order until one fails; the result is the number of the step that ended it (the
+    count of steps when none failed) and that step's output.
+    """
+    workflow: dict[str, Any] = yaml.safe_load(RELEASE_WORKFLOW.read_text(encoding="utf-8"))
+    context = {
+        "github.ref_name": tag,
+        "secrets.DEPLOY_SSH_KEY": keys["client"]
+        .with_suffix("")
+        .read_text(encoding="utf-8")
+        .strip(),
+        "secrets.DEPLOY_KNOWN_HOSTS": known_hosts.strip(),
+        "secrets.DEPLOY_TARGET": f"ssh://deploy@127.0.0.1:{PORT}",
+    }
+    scripts = [step for step in workflow["jobs"]["deploy"]["steps"] if "run" in step]
+    host.ok("rm", "-rf", RUNNER_TEMP)
+    host.ok("mkdir", RUNNER_TEMP)
+    done = Done(0, "")
+    for number, step in enumerate(scripts):
+        assert step["shell"] == "bash"
+        variables = [
+            f"{name}={_expression(value, context)}" for name, value in step.get("env", {}).items()
+        ]
+        done = host.box.run(
+            *("env", "-i", "PATH=/usr/sbin:/usr/bin:/sbin:/bin", "HOME=/root"),
+            f"RUNNER_TEMP={RUNNER_TEMP}",
+            *variables,
+            *("bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]),
+            workdir=workdir,
+        )
+        if done.code != 0:
+            return number, done
+    return len(scripts), done
+
+
+def _clone(host: Host, name: str, bundle: bytes) -> str:
+    """A checkout of what a bundle holds, with the bundle as its `origin`."""
+    host.ok("mkdir", "-p", "/work")
+    path = f"/work/{name}"
+    assert host.box.run("dd", "status=none", f"of={path}.bundle", stdin=bundle).code == 0
+    host.ok("git", "clone", "-q", f"{path}.bundle", path)
+    return path
+
+
+def test_the_workflow_steps_deploy_a_tag_through_the_locked_key(
+    host: Host, releases: Releases, keys: dict[str, Path]
+) -> None:
+    """The scripts of the deploy job, not a copy of them, against the real sshd and script."""
+    tag = releases.workflow.tag
+    work = _clone(host, "workflow", releases.workflow.bundle)
+    # a checkout can leave a lightweight tag where the tag object was; the job must not use it
+    commit = host.ok("git", "-C", work, "rev-parse", f"{tag}^{{commit}}").strip()
+    host.ok("git", "-C", work, "update-ref", f"refs/tags/{tag}", commit)
+    assert host.ok("git", "-C", work, "cat-file", "-t", f"refs/tags/{tag}").strip() == "commit"
+    ended, done = _run_deploy_job(
+        host, tag, keys, workdir=work, known_hosts=_known_hosts(keys["server"])
+    )
+    # the last step prints what a public log shows, which is the host's one line
+    assert (ended, done.output) == (2, f"deployed {tag}\n")
+    assert host.ok("git", "-C", work, "cat-file", "-t", f"refs/tags/{tag}").strip() == "tag"
+    assert f'"version": "{tag}"' in host.ok("cat", f"{STATE}/manifest.json")
+    assert host.box.run("test", "-e", f"{RUNNER_TEMP}/deploy_key").code == 1
+    assert host.local("check").output == "DEPLOY CHECK PASSED\n"
+
+
+def test_the_workflow_stops_at_a_lightweight_tag_and_at_a_host_key_it_does_not_know(
+    host: Host, releases: Releases, keys: dict[str, Path]
+) -> None:
+    manifest = host.sha256(f"{STATE}/manifest.json")
+    # an origin that holds a lightweight tag only: the job stops before it reaches ssh
+    commit = host.ok("git", "-C", "/work/workflow", "rev-parse", "v1.0.5^{commit}").strip()
+    host.ok("git", "init", "-q", "--bare", "/work/light.git")
+    host.ok(
+        "git", "-C", "/work/workflow", "push", "-q", "/work/light.git", f"{commit}:refs/tags/v1.0.6"
+    )
+    host.ok("git", "clone", "-q", "/work/light.git", "/work/light")
+    ended, done = _run_deploy_job(
+        host, "v1.0.6", keys, workdir="/work/light", known_hosts=_known_hosts(keys["server"])
+    )
+    assert ended == 0 and done.code != 0, done.output
+    # it stopped at the type check: the tag was fetched, it is a commit, and no bundle was made
+    assert host.ok("git", "-C", "/work/light", "cat-file", "-t", "refs/tags/v1.0.6").strip() == (
+        "commit"
+    )
+    assert host.box.run("test", "-e", f"{RUNNER_TEMP}/tag.bundle").code == 1
+    assert host.box.run("test", "-e", f"{RUNNER_TEMP}/deploy_key").code == 1
+    # a host key that is not the one pinned: ssh refuses, though the same tag would be accepted
+    ended, done = _run_deploy_job(
+        host,
+        releases.workflow.tag,
+        keys,
+        workdir="/work/workflow",
+        known_hosts=_known_hosts(keys["other"]),
+    )
+    assert ended == 1 and done.code == 255, done.output
+    # ssh is quiet, so its own messages (they name the target) stay out of a public log
+    assert done.output == "", done.output
+    assert host.sha256(f"{STATE}/manifest.json") == manifest
+
+
+def test_a_tag_the_host_refuses_fails_the_job_and_only_the_hosts_line_reaches_the_log(
+    host: Host, releases: Releases, keys: dict[str, Path]
+) -> None:
+    """Quiet ssh must not hide the host's own line, and nothing the job sends is deployed unsigned.
+
+    The tag is signed by another key; the signature is checked before the version, so the
+    older number does not hide the refusal.
+    """
+    manifest = host.sha256(f"{STATE}/manifest.json")
+    work = _clone(host, "stranger", releases.stranger.bundle)
+    ended, done = _run_deploy_job(
+        host,
+        releases.stranger.tag,
+        keys,
+        workdir=work,
+        known_hosts=_known_hosts(keys["server"]),
+    )
+    assert (ended, done.code, done.output) == (1, 2, "refused: signature-invalid\n")
+    assert host.sha256(f"{STATE}/manifest.json") == manifest

@@ -305,6 +305,17 @@ All notable changes to this project are documented here. The format follows
   changelog has no dated section for the version, or when `[Unreleased]` still has entries
   (`tools/release_notes.py` decides the first and the last two). It does not check the tag's
   signature, which needs the pinned key; the runbook has the steps to cut a release.
+- Deploy job in the release workflow (`ci`): after the release is made, the tag's `git bundle` is
+  sent over ssh to the host's locked key, which runs the deploy script. The job has no write
+  permission, runs in the `production` environment, which holds the three secrets (key, pinned host
+  key, target), and does one deploy at a time. The repository's settings must limit that
+  environment to `v*` tags; the workflow cannot set that. It fetches the tag object itself, because
+  a checkout can leave a lightweight tag in its place, and refuses a tag that is not annotated, a
+  bundle that does not verify in an empty repository, or one over the host's size limit. It never
+  turns host-key checking off. The host prints one fixed line and ssh is quiet (its own messages
+  would name the target), so the log of this public repository shows nothing else. The host test
+  runs the job's own scripts against the real sshd and deploy script, and shows that a lightweight
+  tag stops the job before the bundle is made and that an unpinned host key stops it at ssh.
 - Runbook section "Setting up the host" (`docs`): the order of a first set-up as root. Code owned
   by root, settings with their owners and modes, the webhook secret folder, the signing subkey
   import (the passphrase is removed offline, in a throwaway home; the host home must show the

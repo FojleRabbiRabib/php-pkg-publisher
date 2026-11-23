@@ -124,13 +124,21 @@ class Box:
                 timeout=60,
             )
 
-    def run(self, *command: str, user: str | None = None, stdin: bytes | None = None) -> Done:
+    def run(
+        self,
+        *command: str,
+        user: str | None = None,
+        stdin: bytes | None = None,
+        workdir: str | None = None,
+    ) -> Done:
         """Run a command in the container, as root unless `user` (a name or numeric id) is given.
 
         `stdin` is what the command reads on its standard input; without it, nothing is attached.
+        `workdir` is the folder it starts in.
         """
         assert self._id is not None
         who = ["--user", user] if user is not None else []
+        where = ["--workdir", workdir] if workdir is not None else []
         attached = ["--interactive"] if stdin is not None else []
         done = subprocess.run(  # noqa: S603
             [
@@ -138,6 +146,7 @@ class Box:
                 "exec",
                 *attached,
                 *who,
+                *where,
                 "--env",
                 "DEBIAN_FRONTEND=noninteractive",
                 self._id,
