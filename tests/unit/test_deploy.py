@@ -19,17 +19,11 @@ from typing import Final
 
 import pkg_deploy
 import pytest
+from deploykit import ENVIRONMENT, GIT, generate_key, run, signed_bundle
 from pkg_deploy import Broken, Deployer, Layout, Refused
 
 ROOT: Final = Path(__file__).resolve().parents[2]
 BACKUP: Final = re.compile(r"[0-9]{6}-v[0-9.]+")
-GIT: Final = "/usr/bin/git"
-ENVIRONMENT: Final = {
-    "PATH": "/usr/bin:/bin",
-    "LC_ALL": "C",
-    "GIT_CONFIG_NOSYSTEM": "1",
-    "GIT_CONFIG_GLOBAL": "/dev/null",
-}
 
 TREE: Final = {
     "publisher/__init__.py": b"# one\n",
@@ -44,22 +38,11 @@ TREE: Final = {
 }
 
 
-def _run(arguments: list[str], cwd: Path | None = None) -> str:
-    done = subprocess.run(  # noqa: S603
-        arguments, cwd=cwd, env=ENVIRONMENT, capture_output=True, check=True, text=True
-    )
-    return done.stdout
-
-
-def _generate_key(path: Path) -> None:
-    _run(["/usr/bin/ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", os.fspath(path)])
-
-
 @pytest.fixture(scope="module")
 def keys(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
     folder = tmp_path_factory.mktemp("keys")
     for name in ("release", "other"):
-        _generate_key(folder / name)
+        generate_key(folder / name)
     return {"release": folder / "release.pub", "other": folder / "other.pub"}
 
 
@@ -142,41 +125,6 @@ def site(tmp_path: Path, keys: dict[str, Path]) -> Site:
     return Site(layout=layout, host=FakeHost(active={"php-pkg-publisher.path"}), root=tmp_path)
 
 
-def _bundle(
-    folder: Path,
-    keys: dict[str, Path],
-    files: dict[str, bytes],
-    tag: str,
-    *,
-    signer: str | None = "release",
-    present: tuple[str, ...] = ("one",),
-) -> bytes:
-    """A bundle of one tag over a commit holding `files`, signed by the named key."""
-    repo = folder / f"repo-{tag}-{signer}"
-    repo.mkdir()
-    base = ["-c", "gpg.format=ssh", "-c", "user.name=T", "-c", "user.email=t@example.invalid"]
-    _run([GIT, "init", "-q", "-b", "main"], repo)
-    for name, data in files.items():
-        path = repo / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
-    _run([GIT, "add", "-A"], repo)
-    _run([GIT, *base, "commit", "-q", "-m", "x"], repo)
-    if signer is None:
-        _run([GIT, *base, "tag", "-a", tag, "-m", f"Release {tag}"], repo)
-    else:
-        key = ["-c", f"user.signingkey={keys[signer]}"]
-        _run([GIT, *base, *key, "tag", "-s", tag, "-m", f"Release {tag}"], repo)
-    done = subprocess.run(  # noqa: S603
-        [GIT, "bundle", "create", "-", tag],
-        cwd=repo,
-        env=ENVIRONMENT,
-        capture_output=True,
-        check=True,
-    )
-    return done.stdout
-
-
 def _second(files: dict[str, bytes]) -> dict[str, bytes]:
     changed = {name: data.replace(b"one", b"two") for name, data in files.items()}
     del changed["publisher/old.py"]
@@ -186,7 +134,7 @@ def _second(files: dict[str, bytes]) -> dict[str, bytes]:
 def test_a_signed_tag_installs_the_known_files_and_records_them(
     site: Site, keys: dict[str, Path], tmp_path: Path
 ) -> None:
-    name = site.deployer.deploy(_bundle(tmp_path, keys, TREE, "v1.0.0"))
+    name = site.deployer.deploy(signed_bundle(tmp_path, keys, TREE, "v1.0.0"))
     assert name == "v1.0.0"
     layout = site.layout
     assert site.read("opt/publisher/__main__.py") == b"print('one')\n"
@@ -206,7 +154,7 @@ def test_a_signed_tag_installs_the_known_files_and_records_them(
 def test_the_units_stop_before_the_files_change_and_start_again_after(
     site: Site, keys: dict[str, Path], tmp_path: Path
 ) -> None:
-    site.deployer.deploy(_bundle(tmp_path, keys, TREE, "v1.0.0"))
+    site.deployer.deploy(signed_bundle(tmp_path, keys, TREE, "v1.0.0"))
     assert site.host.calls == [
         "validate",
         "systemctl stop php-pkg-publisher.path",
@@ -222,7 +170,7 @@ def test_the_deploy_script_is_the_last_file_written(
     site: Site, keys: dict[str, Path], tmp_path: Path
 ) -> None:
     signed = pkg_deploy.verify_bundle(
-        _bundle(tmp_path, keys, TREE, "v1.0.0"), tmp_path, site.layout
+        signed_bundle(tmp_path, keys, TREE, "v1.0.0"), tmp_path, site.layout
     )
     entries = pkg_deploy.read_entries(signed, site.layout)
     assert entries[-1].path == site.layout.self_path
@@ -232,12 +180,12 @@ def test_the_deploy_script_is_the_last_file_written(
 def test_a_later_release_replaces_files_and_deletes_only_what_it_dropped(
     site: Site, keys: dict[str, Path], tmp_path: Path
 ) -> None:
-    site.deployer.deploy(_bundle(tmp_path, keys, TREE, "v1.0.0"))
+    site.deployer.deploy(signed_bundle(tmp_path, keys, TREE, "v1.0.0"))
     stranger = site.layout.code_dir / "publisher" / "by_hand.py"
     stranger.write_bytes(b"# placed by hand\n")
     elsewhere = site.layout.units_dir / "other.service"
     elsewhere.write_bytes(b"[Service]\n")
-    site.deployer.deploy(_bundle(tmp_path, keys, _second(TREE), "v1.0.1"))
+    site.deployer.deploy(signed_bundle(tmp_path, keys, _second(TREE), "v1.0.1"))
     assert site.read("opt/publisher/__main__.py") == b"print('two')\n"
     assert not (site.layout.code_dir / "publisher" / "old.py").exists()
     assert stranger.read_bytes() == b"# placed by hand\n"
@@ -249,8 +197,8 @@ def test_a_later_release_replaces_files_and_deletes_only_what_it_dropped(
 def test_the_same_version_may_run_again_and_an_older_one_may_not(
     site: Site, keys: dict[str, Path], tmp_path: Path
 ) -> None:
-    newer = _bundle(tmp_path, keys, _second(TREE), "v1.0.1")
-    older = _bundle(tmp_path, keys, TREE, "v1.0.0")
+    newer = signed_bundle(tmp_path, keys, _second(TREE), "v1.0.1")
+    older = signed_bundle(tmp_path, keys, TREE, "v1.0.0")
     site.deployer.deploy(newer)
     site.host.calls.clear()
     backups = sorted(path.name for path in site.layout.backups.iterdir())
@@ -277,14 +225,14 @@ def _refusal(site: Site, bundle: bytes) -> str:
 def test_a_tag_signed_by_another_key_is_refused(
     site: Site, keys: dict[str, Path], tmp_path: Path
 ) -> None:
-    bundle = _bundle(tmp_path, keys, TREE, "v1.0.0", signer="other")
+    bundle = signed_bundle(tmp_path, keys, TREE, "v1.0.0", signer="other")
     assert _refusal(site, bundle) == "signature-invalid"
 
 
 def test_an_unsigned_annotated_tag_is_refused(
     site: Site, keys: dict[str, Path], tmp_path: Path
 ) -> None:
-    assert _refusal(site, _bundle(tmp_path, keys, TREE, "v1.0.0", signer=None)) == (
+    assert _refusal(site, signed_bundle(tmp_path, keys, TREE, "v1.0.0", signer=None)) == (
         "signature-invalid"
     )
 
@@ -311,10 +259,10 @@ def test_a_tag_signed_with_openpgp_is_refused_and_starts_no_gpg(
     repo = tmp_path / "pgp"
     repo.mkdir()
     base = ["-c", "user.name=T", "-c", "user.email=t@example.invalid"]
-    _run([GIT, "init", "-q", "-b", "main"], repo)
+    run([GIT, "init", "-q", "-b", "main"], repo)
     (repo / "x").write_text("x", encoding="utf-8")
-    _run([GIT, "add", "x"], repo)
-    _run([GIT, *base, "commit", "-q", "-m", "x"], repo)
+    run([GIT, "add", "x"], repo)
+    run([GIT, *base, "commit", "-q", "-m", "x"], repo)
     subprocess.run(  # noqa: S603
         [GIT, *base, "-c", "user.signingkey=t@example.invalid", "tag", "-s", "v1.0.0", "-m", "m"],
         cwd=repo,
@@ -336,11 +284,11 @@ def test_a_lightweight_tag_is_refused(site: Site, keys: dict[str, Path], tmp_pat
     repo = tmp_path / "light"
     repo.mkdir()
     base = ["-c", "user.name=T", "-c", "user.email=t@example.invalid"]
-    _run([GIT, "init", "-q", "-b", "main"], repo)
+    run([GIT, "init", "-q", "-b", "main"], repo)
     (repo / "x").write_text("x", encoding="utf-8")
-    _run([GIT, "add", "x"], repo)
-    _run([GIT, *base, "commit", "-q", "-m", "x"], repo)
-    _run([GIT, "tag", "v1.0.0"], repo)
+    run([GIT, "add", "x"], repo)
+    run([GIT, *base, "commit", "-q", "-m", "x"], repo)
+    run([GIT, "tag", "v1.0.0"], repo)
     bundle = subprocess.run(  # noqa: S603
         [GIT, "bundle", "create", "-", "v1.0.0"],
         cwd=repo,
@@ -355,10 +303,10 @@ def test_a_signed_tag_under_another_name_is_refused(
     site: Site, keys: dict[str, Path], tmp_path: Path
 ) -> None:
     """`git verify-tag` accepts it, because it checks the signed object and not the ref name."""
-    _bundle(tmp_path, keys, TREE, "v1.0.0")
+    signed_bundle(tmp_path, keys, TREE, "v1.0.0")
     repo = tmp_path / "repo-v1.0.0-release"
-    signed_object = _run([GIT, "rev-parse", "v1.0.0"], repo).strip()
-    _run([GIT, "update-ref", "refs/tags/v9.9.9", signed_object], repo)
+    signed_object = run([GIT, "rev-parse", "v1.0.0"], repo).strip()
+    run([GIT, "update-ref", "refs/tags/v9.9.9", signed_object], repo)
     bundle = subprocess.run(  # noqa: S603
         [GIT, "bundle", "create", "-", "v9.9.9"],
         cwd=repo,
@@ -372,9 +320,9 @@ def test_a_signed_tag_under_another_name_is_refused(
 def test_a_bundle_with_two_refs_or_a_branch_or_a_pre_release_is_refused(
     site: Site, keys: dict[str, Path], tmp_path: Path
 ) -> None:
-    _bundle(tmp_path, keys, TREE, "v1.0.0")
+    signed_bundle(tmp_path, keys, TREE, "v1.0.0")
     repo = tmp_path / "repo-v1.0.0-release"
-    _run([GIT, "tag", "-f", "v1.0.1", "v1.0.0"], repo)
+    run([GIT, "tag", "-f", "v1.0.1", "v1.0.0"], repo)
 
     def bundle_of(*refs: str) -> bytes:
         return subprocess.run(  # noqa: S603
@@ -387,7 +335,7 @@ def test_a_bundle_with_two_refs_or_a_branch_or_a_pre_release_is_refused(
 
     assert _refusal(site, bundle_of("v1.0.0", "v1.0.1")) == "ref-invalid"
     assert _refusal(site, bundle_of("main")) == "ref-invalid"
-    _run([GIT, "update-ref", "refs/tags/v1.0.0-rc1", "v1.0.0"], repo)
+    run([GIT, "update-ref", "refs/tags/v1.0.0-rc1", "v1.0.0"], repo)
     assert _refusal(site, bundle_of("v1.0.0-rc1")) == "ref-invalid"
 
 
@@ -403,20 +351,20 @@ def test_a_tree_with_a_link_a_missing_file_or_a_stray_unit_is_refused(
     site: Site, keys: dict[str, Path], tmp_path: Path
 ) -> None:
     without = {name: data for name, data in TREE.items() if name != "web/sync.php"}
-    assert _refusal(site, _bundle(tmp_path, keys, without, "v1.0.0")) == "tree-invalid"
+    assert _refusal(site, signed_bundle(tmp_path, keys, without, "v1.0.0")) == "tree-invalid"
     stray = {**TREE, "deploy/systemd/evil.service": b"[Service]\n"}
-    assert _refusal(site, _bundle(tmp_path, keys, stray, "v1.0.1")) == "tree-invalid"
+    assert _refusal(site, signed_bundle(tmp_path, keys, stray, "v1.0.1")) == "tree-invalid"
     linked = tmp_path / "linked"
     linked.mkdir()
-    _bundle(linked, keys, TREE, "v1.0.2")  # the tree; the link replaces a file in it below
+    signed_bundle(linked, keys, TREE, "v1.0.2")  # the tree; the link replaces a file in it below
     repo = linked / "repo-v1.0.2-release"
     (repo / "publisher" / "old.py").unlink()
     (repo / "publisher" / "old.py").symlink_to("/etc/passwd")
     base = ["-c", "gpg.format=ssh", "-c", "user.name=T", "-c", "user.email=t@example.invalid"]
     key = ["-c", f"user.signingkey={keys['release']}"]
-    _run([GIT, "add", "-A"], repo)
-    _run([GIT, *base, "commit", "-q", "-m", "link"], repo)
-    _run([GIT, *base, *key, "tag", "-s", "v1.0.3", "-m", "Release v1.0.3"], repo)
+    run([GIT, "add", "-A"], repo)
+    run([GIT, *base, "commit", "-q", "-m", "link"], repo)
+    run([GIT, *base, *key, "tag", "-s", "v1.0.3", "-m", "Release v1.0.3"], repo)
     bundle = subprocess.run(  # noqa: S603
         [GIT, "bundle", "create", "-", "v1.0.3"],
         cwd=repo,
@@ -431,15 +379,15 @@ def test_a_products_file_the_new_loader_rejects_stops_the_deploy_before_any_chan
     site: Site, keys: dict[str, Path], tmp_path: Path
 ) -> None:
     site.host.valid = False
-    assert _refusal(site, _bundle(tmp_path, keys, TREE, "v1.0.0")) == "products-invalid"
+    assert _refusal(site, signed_bundle(tmp_path, keys, TREE, "v1.0.0")) == "products-invalid"
     assert not site.layout.etc_dir.joinpath("products.yml").exists()
 
 
 def test_a_failed_step_puts_the_old_files_and_the_manifest_back(
     site: Site, keys: dict[str, Path], tmp_path: Path
 ) -> None:
-    site.deployer.deploy(_bundle(tmp_path, keys, TREE, "v1.0.0"))
-    second = _bundle(tmp_path, keys, _second(TREE), "v1.0.1")
+    site.deployer.deploy(signed_bundle(tmp_path, keys, TREE, "v1.0.0"))
+    second = signed_bundle(tmp_path, keys, _second(TREE), "v1.0.1")
 
     def snapshot() -> dict[Path, bytes]:
         return {
@@ -470,15 +418,15 @@ def test_a_failed_step_puts_the_old_files_and_the_manifest_back(
 def test_a_deploy_that_was_restored_leaves_no_backup_and_rollback_still_undoes_the_last_one(
     site: Site, keys: dict[str, Path], tmp_path: Path
 ) -> None:
-    first = _bundle(tmp_path, keys, TREE, "v1.0.0")
-    second = _bundle(tmp_path, keys, _second(TREE), "v1.0.1")
+    first = signed_bundle(tmp_path, keys, TREE, "v1.0.0")
+    second = signed_bundle(tmp_path, keys, _second(TREE), "v1.0.1")
     third_files = {name: data.replace(b"one", b"three") for name, data in TREE.items()}
     site.deployer.deploy(first)
     site.deployer.deploy(second)
     count = len(list(site.layout.backups.iterdir()))
     site.host.fail_on = "start"
     with pytest.raises(pkg_deploy.RolledBack):
-        site.deployer.deploy(_bundle(tmp_path, keys, third_files, "v1.0.2"))
+        site.deployer.deploy(signed_bundle(tmp_path, keys, third_files, "v1.0.2"))
     assert len(list(site.layout.backups.iterdir())) == count
     assert site.deployer.rollback().endswith("v1.0.1")
     assert site.read("opt/publisher/__main__.py") == b"print('one')\n"
@@ -488,7 +436,7 @@ def test_a_deploy_that_was_restored_leaves_no_backup_and_rollback_still_undoes_t
 def test_a_write_that_fails_half_way_puts_the_old_files_back(
     site: Site, keys: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    site.deployer.deploy(_bundle(tmp_path, keys, TREE, "v1.0.0"))
+    site.deployer.deploy(signed_bundle(tmp_path, keys, TREE, "v1.0.0"))
     original = Deployer._place
     count = {"n": 0}
 
@@ -500,7 +448,7 @@ def test_a_write_that_fails_half_way_puts_the_old_files_back(
 
     monkeypatch.setattr(Deployer, "_place", flaky)
     with pytest.raises(pkg_deploy.RolledBack):
-        site.deployer.deploy(_bundle(tmp_path, keys, _second(TREE), "v1.0.1"))
+        site.deployer.deploy(signed_bundle(tmp_path, keys, _second(TREE), "v1.0.1"))
     monkeypatch.setattr(Deployer, "_place", original)
     assert site.read("opt/publisher/__main__.py") == b"print('one')\n"
     assert (site.layout.code_dir / "publisher" / "old.py").exists()
@@ -510,7 +458,7 @@ def test_a_write_that_fails_half_way_puts_the_old_files_back(
 def test_a_restore_that_fails_too_is_reported_as_broken(
     site: Site, keys: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    site.deployer.deploy(_bundle(tmp_path, keys, TREE, "v1.0.0"))
+    site.deployer.deploy(signed_bundle(tmp_path, keys, TREE, "v1.0.0"))
     site.host.fail_on = "start"
 
     def broken(self: Deployer, folder: Path) -> None:
@@ -518,12 +466,12 @@ def test_a_restore_that_fails_too_is_reported_as_broken(
 
     monkeypatch.setattr(Deployer, "_restore", broken)
     with pytest.raises(Broken):
-        site.deployer.deploy(_bundle(tmp_path, keys, _second(TREE), "v1.0.1"))
+        site.deployer.deploy(signed_bundle(tmp_path, keys, _second(TREE), "v1.0.1"))
     # the marker stays: nothing else may run until `rollback` has put the host right
     assert site.layout.pending.exists()
     monkeypatch.undo()
     with pytest.raises(Refused, match="state-invalid"):
-        site.deployer.deploy(_bundle(tmp_path, keys, TREE, "v1.0.2"))
+        site.deployer.deploy(signed_bundle(tmp_path, keys, TREE, "v1.0.2"))
     assert any("did not finish" in problem for problem in site.deployer.check())
     site.host.fail_on = ""
     site.deployer.rollback()
@@ -534,8 +482,8 @@ def test_a_restore_that_fails_too_is_reported_as_broken(
 def test_rollback_undoes_the_last_deploy_and_bans_its_version(
     site: Site, keys: dict[str, Path], tmp_path: Path
 ) -> None:
-    second = _bundle(tmp_path, keys, _second(TREE), "v1.0.1")
-    site.deployer.deploy(_bundle(tmp_path, keys, TREE, "v1.0.0"))
+    second = signed_bundle(tmp_path, keys, _second(TREE), "v1.0.1")
+    site.deployer.deploy(signed_bundle(tmp_path, keys, TREE, "v1.0.0"))
     site.deployer.deploy(second)
     assert site.deployer.rollback().endswith("v1.0.1")
     assert site.read("opt/publisher/__main__.py") == b"print('one')\n"
@@ -557,7 +505,7 @@ def test_a_second_rollback_goes_one_deploy_further_back(
 ) -> None:
     for minor in range(3):
         files = TREE if minor == 0 else _second(TREE)
-        site.deployer.deploy(_bundle(tmp_path, keys, files, f"v1.{minor}.0"))
+        site.deployer.deploy(signed_bundle(tmp_path, keys, files, f"v1.{minor}.0"))
     assert site.deployer.rollback().endswith("v1.2.0")
     assert site.deployer.rollback().endswith("v1.1.0")
     assert json.loads(site.layout.manifest.read_text(encoding="utf-8"))["version"] == "v1.0.0"
@@ -575,7 +523,7 @@ def test_a_stop_that_fails_mid_way_starts_again_what_was_stopped(
     site.host.fail_on = "stop php-pkg-publisher.timer"
     site.host.calls.clear()
     with pytest.raises(pkg_deploy.RolledBack):
-        site.deployer.deploy(_bundle(tmp_path, keys, TREE, "v1.0.0"))
+        site.deployer.deploy(signed_bundle(tmp_path, keys, TREE, "v1.0.0"))
     assert "systemctl start php-pkg-publisher.path" in site.host.calls
     assert "systemctl start php-pkg-publisher.timer" in site.host.calls
     assert site.host.calls[-1].startswith("systemctl start")
@@ -586,12 +534,12 @@ def test_a_stop_that_fails_mid_way_starts_again_what_was_stopped(
 def test_a_backup_that_cannot_be_finished_leaves_no_folder_and_rollback_still_works(
     site: Site, keys: dict[str, Path], tmp_path: Path
 ) -> None:
-    site.deployer.deploy(_bundle(tmp_path, keys, TREE, "v1.0.0"))
+    site.deployer.deploy(signed_bundle(tmp_path, keys, TREE, "v1.0.0"))
     (site.layout.docroot / "sync.php").unlink()
     (site.layout.docroot / "sync.php").symlink_to(site.root / "elsewhere")
     site.host.calls.clear()
     with pytest.raises(Refused) as caught:
-        site.deployer.deploy(_bundle(tmp_path, keys, _second(TREE), "v1.0.1"))
+        site.deployer.deploy(signed_bundle(tmp_path, keys, _second(TREE), "v1.0.1"))
     assert caught.value.code == "target-invalid"
     names = [path.name for path in site.layout.backups.iterdir()]
     assert len(names) == 1
@@ -608,7 +556,7 @@ def test_only_the_newest_backups_are_kept(
     site: Site, keys: dict[str, Path], tmp_path: Path
 ) -> None:
     for minor in range(8):
-        site.deployer.deploy(_bundle(tmp_path, keys, TREE, f"v1.{minor}.0"))
+        site.deployer.deploy(signed_bundle(tmp_path, keys, TREE, f"v1.{minor}.0"))
     names = sorted(path.name for path in site.layout.backups.iterdir())
     assert len(names) == pkg_deploy.KEEP_BACKUPS
     assert names[-1].endswith("v1.7.0")
@@ -636,7 +584,7 @@ def test_the_check_reports_what_changed_since_the_deploy(
     mutate: Callable[[Site], object],
     expected: str,
 ) -> None:
-    site.deployer.deploy(_bundle(tmp_path, keys, TREE, "v1.0.0"))
+    site.deployer.deploy(signed_bundle(tmp_path, keys, TREE, "v1.0.0"))
     assert site.deployer.check() == []
     mutate(site)
     problems = site.deployer.check()
@@ -646,7 +594,7 @@ def test_the_check_reports_what_changed_since_the_deploy(
 def test_a_keyring_package_is_recorded_when_placed_and_checked_after(
     site: Site, keys: dict[str, Path], tmp_path: Path
 ) -> None:
-    site.deployer.deploy(_bundle(tmp_path, keys, TREE, "v1.0.0"))
+    site.deployer.deploy(signed_bundle(tmp_path, keys, TREE, "v1.0.0"))
     package = site.layout.keyring_dir / "rabib-release.rpm"
     package.write_bytes(b"package")
     package.chmod(0o644)
@@ -663,13 +611,13 @@ def test_a_keyring_package_is_recorded_when_placed_and_checked_after(
 def test_only_the_known_places_may_be_deleted_even_if_the_manifest_lists_more(
     site: Site, keys: dict[str, Path], tmp_path: Path
 ) -> None:
-    site.deployer.deploy(_bundle(tmp_path, keys, TREE, "v1.0.0"))
+    site.deployer.deploy(signed_bundle(tmp_path, keys, TREE, "v1.0.0"))
     precious = site.root / "precious.txt"
     precious.write_bytes(b"keep")
     manifest = json.loads(site.layout.manifest.read_text(encoding="utf-8"))
     manifest["files"][os.fspath(precious)] = {"sha256": "0" * 64, "mode": 0o644}
     site.layout.manifest.write_text(json.dumps(manifest), encoding="utf-8")
-    site.deployer.deploy(_bundle(tmp_path, keys, _second(TREE), "v1.0.1"))
+    site.deployer.deploy(signed_bundle(tmp_path, keys, _second(TREE), "v1.0.1"))
     assert precious.read_bytes() == b"keep"
 
 
@@ -680,7 +628,7 @@ def test_a_target_that_is_a_link_is_refused_not_followed(
     victim.write_bytes(b"keep")
     (site.layout.docroot / "sync.php").symlink_to(victim)
     with pytest.raises(Refused) as caught:
-        site.deployer.deploy(_bundle(tmp_path, keys, TREE, "v1.0.0"))
+        site.deployer.deploy(signed_bundle(tmp_path, keys, TREE, "v1.0.0"))
     assert caught.value.code == "target-invalid"
     assert victim.read_bytes() == b"keep"
 
@@ -715,7 +663,7 @@ def test_the_settings_file_is_strict(tmp_path: Path) -> None:
 def test_what_leaves_the_host_is_one_fixed_code(
     site: Site, keys: dict[str, Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    bundle = _bundle(tmp_path, keys, TREE, "v1.0.0", signer="other")
+    bundle = signed_bundle(tmp_path, keys, TREE, "v1.0.0", signer="other")
     code = pkg_deploy.main(
         [], layout=site.layout, host=site.host, stdin=io.BytesIO(bundle), log=site.log.append
     )
@@ -731,7 +679,7 @@ def test_what_leaves_the_host_is_one_fixed_code(
 def test_a_good_deploy_prints_only_the_tag_and_a_check_prints_a_verdict(
     site: Site, keys: dict[str, Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    bundle = _bundle(tmp_path, keys, TREE, "v1.0.0")
+    bundle = signed_bundle(tmp_path, keys, TREE, "v1.0.0")
     arguments = {"layout": site.layout, "host": site.host, "log": site.log.append}
     assert pkg_deploy.main([], stdin=io.BytesIO(bundle), **arguments) == 0  # type: ignore[arg-type]
     assert capsys.readouterr().out == "deployed v1.0.0\n"
@@ -745,7 +693,7 @@ def test_a_good_deploy_prints_only_the_tag_and_a_check_prints_a_verdict(
 
 
 def test_two_deploys_cannot_run_at_once(site: Site, keys: dict[str, Path], tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path, keys, TREE, "v1.0.0")
+    bundle = signed_bundle(tmp_path, keys, TREE, "v1.0.0")
     with site.deployer._locked(), pytest.raises(Refused) as caught:
         site.deployer.deploy(bundle)
     assert caught.value.code == "host-busy"
@@ -756,7 +704,7 @@ def test_the_deploy_stops_without_the_state_folders(
 ) -> None:
     site.layout.backups.rmdir()
     with pytest.raises(Refused) as caught:
-        site.deployer.deploy(_bundle(tmp_path, keys, TREE, "v1.0.0"))
+        site.deployer.deploy(signed_bundle(tmp_path, keys, TREE, "v1.0.0"))
     assert caught.value.code == "state-invalid"
 
 
@@ -775,7 +723,7 @@ def test_the_signer_list_and_the_state_must_be_closed_to_everyone_else(
     path = getattr(site.layout, target)
     path.chmod(0o775 if path.is_dir() else 0o664)
     with pytest.raises(Refused) as caught:
-        site.deployer.deploy(_bundle(tmp_path, keys, TREE, "v1.0.0"))
+        site.deployer.deploy(signed_bundle(tmp_path, keys, TREE, "v1.0.0"))
     assert caught.value.code == code
     assert not site.layout.manifest.exists()
 
@@ -783,7 +731,7 @@ def test_the_signer_list_and_the_state_must_be_closed_to_everyone_else(
 def test_a_keyring_file_or_folder_that_others_can_write_is_not_recorded_and_is_reported(
     site: Site, keys: dict[str, Path], tmp_path: Path
 ) -> None:
-    site.deployer.deploy(_bundle(tmp_path, keys, TREE, "v1.0.0"))
+    site.deployer.deploy(signed_bundle(tmp_path, keys, TREE, "v1.0.0"))
     package = site.layout.keyring_dir / "rabib-release.rpm"
     package.write_bytes(b"package")
     package.chmod(0o666)
@@ -809,7 +757,7 @@ def test_a_keyring_file_or_folder_that_others_can_write_is_not_recorded_and_is_r
 def test_a_manifest_that_lists_a_path_with_dots_is_refused(
     site: Site, keys: dict[str, Path], tmp_path: Path
 ) -> None:
-    site.deployer.deploy(_bundle(tmp_path, keys, TREE, "v1.0.0"))
+    site.deployer.deploy(signed_bundle(tmp_path, keys, TREE, "v1.0.0"))
     manifest = json.loads(site.layout.manifest.read_text(encoding="utf-8"))
     manifest["files"][f"{site.layout.code_dir}/publisher/../../x"] = {"sha256": "0", "mode": 420}
     site.layout.manifest.write_text(json.dumps(manifest), encoding="utf-8")
@@ -821,14 +769,14 @@ def test_products_yml_is_validated_from_the_file_that_is_deployed(
     site: Site, keys: dict[str, Path], tmp_path: Path
 ) -> None:
     files = {**TREE, "publisher/products.yml": b"not the deployed file\n"}
-    site.deployer.deploy(_bundle(tmp_path, keys, files, "v1.0.0"))
+    site.deployer.deploy(signed_bundle(tmp_path, keys, files, "v1.0.0"))
     assert site.host.validated == b"products: []\n"
 
 
 def test_a_blob_or_a_tree_over_the_size_limits_is_refused_unread(
     site: Site, keys: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    bundle = _bundle(tmp_path, keys, TREE, "v1.0.0")
+    bundle = signed_bundle(tmp_path, keys, TREE, "v1.0.0")
     monkeypatch.setattr(pkg_deploy, "MAX_FILE_BYTES", 10)
     assert _refusal(site, bundle) == "tree-invalid"
     monkeypatch.setattr(pkg_deploy, "MAX_FILE_BYTES", 1000)
@@ -848,14 +796,19 @@ def test_the_exit_code_tells_a_refusal_from_a_rollback_from_a_broken_host(
             [], layout=site.layout, host=site.host, stdin=io.BytesIO(bundle), log=site.log.append
         )
 
-    assert run_main(_bundle(tmp_path, keys, TREE, "v1.0.0")) == 0
+    assert run_main(signed_bundle(tmp_path, keys, TREE, "v1.0.0")) == 0
     capsys.readouterr()
     site.host.fail_on = "start"
-    assert run_main(_bundle(tmp_path, keys, _second(TREE), "v1.0.1")) == pkg_deploy.EXIT_ROLLED_BACK
+    assert (
+        run_main(signed_bundle(tmp_path, keys, _second(TREE), "v1.0.1"))
+        == pkg_deploy.EXIT_ROLLED_BACK
+    )
     assert capsys.readouterr().err == "refused: rolled-back\n"
     monkeypatch.setattr(Deployer, "_restore", lambda self, folder: (_ for _ in ()).throw(OSError()))
     site.host.fail_on = "start"
-    assert run_main(_bundle(tmp_path, keys, _second(TREE), "v1.0.2")) == pkg_deploy.EXIT_BROKEN
+    assert (
+        run_main(signed_bundle(tmp_path, keys, _second(TREE), "v1.0.2")) == pkg_deploy.EXIT_BROKEN
+    )
     assert capsys.readouterr().err == "broken: restore failed\n"
 
 

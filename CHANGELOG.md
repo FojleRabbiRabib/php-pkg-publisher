@@ -328,6 +328,13 @@ All notable changes to this project are documented here. The format follows
   the keyring packages) and `record`/`forget` for the hand-placed keyring packages. It prints one
   fixed code, because a public repository's workflow log is public; the detail goes to the
   journal.
+- Deploy host test (`tests/container/test_deploy_host.py`, Ubuntu 22.04, throwaway keys): the
+  installed script runs as the forced command of a locked key behind a real sshd and the one sudo
+  line, with a real `runuser`, an ext4 folder with the immutable flag and a web user; only
+  `systemctl` is faked. It shows that the key runs nothing else (the client's own command, a
+  terminal, a direct tunnel, a remote forward and another key all fail) and that the deploy user
+  cannot use sudo for anything else. A client sees one fixed line, and the publisher user can load
+  `products.yml` only when the state folder is `0711` (at `0700` the deploy is refused).
 
 ### Changed
 

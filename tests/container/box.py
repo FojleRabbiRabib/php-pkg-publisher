@@ -59,9 +59,27 @@ def docker_available() -> bool:
 
 
 class Box:
-    def __init__(self, image: Image, kit: Path) -> None:
+    """A container with a distribution in it.
+
+    The default box cannot gain privilege and shares the host's network. A box that tests a root
+    tool behind sshd and sudo needs the opposite: `privileged` (loop mounts, `chattr`),
+    `no_new_privileges=False` (setuid `sudo`) and a network of its own.
+    """
+
+    def __init__(
+        self,
+        image: Image,
+        kit: Path,
+        *,
+        privileged: bool = False,
+        no_new_privileges: bool = True,
+        network: str = "host",
+    ) -> None:
         self._image = image
         self._kit = kit
+        self._privileged = privileged
+        self._no_new_privileges = no_new_privileges
+        self._network = network
         self._id: str | None = None
 
     def __enter__(self) -> Box:
@@ -73,10 +91,10 @@ class Box:
                 "--rm",
                 "--pull",
                 "never",
-                "--security-opt",
-                "no-new-privileges",
+                *(["--privileged"] if self._privileged else []),
+                *(["--security-opt", "no-new-privileges"] if self._no_new_privileges else []),
                 "--network",
-                "host",
+                self._network,
                 "--volume",
                 f"{self._kit}:/kit:ro",
                 self._image.reference,
@@ -106,23 +124,30 @@ class Box:
                 timeout=60,
             )
 
-    def run(self, *command: str, user: str | None = None) -> Done:
-        """Run a command in the container, as root unless `user` (a name or numeric id) is given."""
+    def run(self, *command: str, user: str | None = None, stdin: bytes | None = None) -> Done:
+        """Run a command in the container, as root unless `user` (a name or numeric id) is given.
+
+        `stdin` is what the command reads on its standard input; without it, nothing is attached.
+        """
         assert self._id is not None
         who = ["--user", user] if user is not None else []
+        attached = ["--interactive"] if stdin is not None else []
         done = subprocess.run(  # noqa: S603
             [
                 DOCKER,
                 "exec",
+                *attached,
                 *who,
                 "--env",
                 "DEBIAN_FRONTEND=noninteractive",
                 self._id,
                 *command,
             ],
+            input=stdin,
             capture_output=True,
-            text=True,
             check=False,
             timeout=COMMAND_TIMEOUT,
         )
-        return Done(done.returncode, done.stdout + done.stderr)
+        # as text mode reads it: the same lines as before, whatever the program ends them with
+        text = (done.stdout + done.stderr).decode("utf-8", "replace")
+        return Done(done.returncode, text.replace("\r\n", "\n").replace("\r", "\n"))
