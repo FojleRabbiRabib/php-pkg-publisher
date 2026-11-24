@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import textwrap
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -26,7 +27,7 @@ import pkg_deploy
 import pytest
 import yaml
 from box import Box, Done, docker_available
-from deploykit import GIT, generate_key, run, signed_bundle
+from deploykit import GIT, generate_key, openpgp_bundle, run, signed_bundle
 from images import IMAGES
 
 pytestmark = pytest.mark.container
@@ -46,7 +47,6 @@ DOCROOT: Final = f"{SITE_HOME}/public_html"
 SITE_ROOT: Final = "/srv/pkg/site"
 SCRIPT: Final = pkg_deploy.SELF_PATH.as_posix()
 STATE: Final = pkg_deploy.STATE_DIR.as_posix()
-SUDOERS: Final = "/etc/sudoers.d/php-pkg-publisher-deploy"
 SYSTEMCTL_LOG: Final = "/var/log/systemctl-calls"
 PORT: Final = "2222"
 
@@ -65,6 +65,7 @@ exit 0
 PACKAGES: Final = (
     "e2fsprogs",
     "git",
+    "gnupg",
     "openssh-client",
     "openssh-server",
     "python3",
@@ -101,6 +102,11 @@ class Releases:
     stranger: Release
     broken: Release
     workflow: Release
+    byhand: Release
+    installer: Release
+    forged: Release
+    openpgp: Release
+    openpgp_key: bytes
 
 
 def _tracked_files() -> dict[str, bytes]:
@@ -125,9 +131,12 @@ def releases(keys: dict[str, Path], tmp_path_factory: pytest.TempPathFactory) ->
     second = {**files, script: files[script] + b"\n# second\n", "publisher/probe.py": b"# probe\n"}
     third = {**files, script: files[script] + b"\n# third\n"}
     broken = {**files, "products.yml": b"products: not-a-list\n"}
+    marked = {**files, script: files[script] + b"\n# provisioned, never deployed\n"}
 
     def release(tag: str, tree: dict[str, bytes], signer: str = "release") -> Release:
         return Release(tag, signed_bundle(folder, keys, tree, tag, signer=signer), tree)
+
+    openpgp_bundle_, openpgp_key = openpgp_bundle(folder, marked, "v0.9.2")
 
     return Releases(
         first=release("v1.0.0", files),
@@ -136,6 +145,13 @@ def releases(keys: dict[str, Path], tmp_path_factory: pytest.TempPathFactory) ->
         stranger=release("v1.0.3", files, signer="other"),
         broken=release("v1.0.4", broken),
         workflow=release("v1.0.5", files),
+        byhand=release("v1.0.7", files),
+        # what the runbook has the operator install by hand: not the first release's bytes, so the
+        # first deploy has to replace it
+        installer=release("v0.9.0", marked),
+        forged=release("v0.9.1", marked, signer="other"),
+        openpgp=Release("v0.9.2", openpgp_bundle_, marked),
+        openpgp_key=openpgp_key,
     )
 
 
@@ -149,25 +165,52 @@ def _known_hosts(server: Path) -> str:
 
 
 def _write_kit(kit: Path, keys: dict[str, Path]) -> None:
-    """Everything the host is built from, given to the container read-only."""
-    (kit / "deploy.conf").write_text(
-        f"docroot={DOCROOT}\nsite_root={SITE_ROOT}\n", encoding="utf-8"
-    )
-    signers = f'{pkg_deploy.PRINCIPAL} namespaces="git" {_key_text(keys["release"])}\n'
-    (kit / "allowed_signers").write_text(signers, encoding="utf-8")
-    (kit / "sudoers").write_text(f'deploy ALL=(root) NOPASSWD: {SCRIPT} ""\n', encoding="utf-8")
-    forced = f'restrict,command="/usr/bin/sudo {SCRIPT}" {_key_text(keys["client"])}\n'
-    (kit / "authorized_keys").write_text(forced, encoding="utf-8")
-    (kit / "known_hosts").write_text(_known_hosts(keys["server"]), encoding="utf-8")
+    """What the container is given, read-only: the stub and the keys.
+
+    The deploy user, its key, the sudo line, the folders and the script are not here: the
+    runbook's own commands make them (`_provision`).
+    """
     (kit / "systemctl").write_text(SYSTEMCTL_STUB, encoding="utf-8")
     (kit / "stub-active-units").write_text(
         "php-pkg-publisher.path\nphp-pkg-publisher.timer\n", encoding="utf-8"
     )
-    # not the release's bytes and not its mode, so the first deploy has to replace it
-    script = (ROOT / "deploy/pkg_deploy.py").read_bytes() + b"\n# provisioned, never deployed\n"
-    (kit / "php-pkg-publisher-deploy").write_bytes(script)
     for name in ("client", "other", "server"):
         (kit / f"{name}_key").write_bytes(keys[name].with_suffix("").read_bytes())
+    (kit / "server_key.pub").write_bytes(keys["server"].read_bytes())
+
+
+RUNBOOK: Final = (ROOT / "docs" / "runbook.md").read_text(encoding="utf-8")
+# measured: `git verify-tag` prints the first line for any valid signature, even by a key that is
+# not in the signer file, and then the second with exit status 1
+GOOD_SIGNATURE: Final = 'Good "git" signature'
+NO_PRINCIPAL: Final = "No principal matched."
+GOOD_FOR_RELEASE: Final = f'Good "git" signature for {pkg_deploy.PRINCIPAL} with '
+# a program a checkout's own configuration could name in place of `ssh-keygen`: it agrees to all
+ALWAYS_YES: Final = """#!/bin/sh
+case "$*" in
+  *find-principals*) echo principal ;;
+  *) echo 'Good "git" signature for principal with ED25519 key SHA256:fake' ;;
+esac
+"""
+ALWAYS_YES_PATH: Final = "/usr/local/bin/always-yes"
+
+
+def _blocks(containing: str) -> list[str]:
+    """Every `sh` block of the runbook that holds `containing`, dedented."""
+    found = re.findall(r"^[ ]*```sh\n(.*?)^[ ]*```$", RUNBOOK, re.MULTILINE | re.DOTALL)
+    return [textwrap.dedent(block) for block in found if containing in block]
+
+
+def _block(containing: str) -> str:
+    """The one block of the runbook that holds `containing`; repeats of it must be identical."""
+    blocks = _blocks(containing)
+    assert blocks and all(block == blocks[0] for block in blocks), containing
+    return blocks[0]
+
+
+def _fill(text: str, table: dict[str, str]) -> str:
+    """Fill the placeholders from a closed table: one the table lacks is an error."""
+    return re.sub(r"<([a-z-]+)>", lambda found: table[found[1]], text)
 
 
 class Host:
@@ -175,11 +218,24 @@ class Host:
 
     def __init__(self, box: Box) -> None:
         self.box = box
+        # the host key lines the runbook's own command printed, for the two forms of a target
+        self.known_hosts = ""
+        self.known_hosts_port_22 = ""
 
     def ok(self, *command: str) -> str:
         done = self.box.run(*command)
         assert done.code == 0, (command, done.output)
         return done.output
+
+    def put(self, path: str, data: bytes) -> None:
+        assert self.box.run("dd", "status=none", f"of={path}", stdin=data).code == 0
+
+    def runbook(self, containing: str, table: dict[str, str], workdir: str = "/") -> Done:
+        """Run a block of the runbook as written, as root, with its placeholders filled."""
+        script = _fill(_block(containing), table)
+        return self.box.run(
+            *("bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script), workdir=workdir
+        )
 
     def ssh(
         self,
@@ -237,7 +293,99 @@ class Host:
         return "i" in self.ok("lsattr", "-d", DOCROOT).split()[0]
 
 
-def _provision(host: Host) -> None:
+def _by_hand(
+    host: Host,
+    release: Release,
+    label: str,
+    *,
+    tamper: bool = False,
+    alias: str | None = None,
+    owner: str | None = None,
+    program: str | None = None,
+) -> Done:
+    """The runbook's block that checks the tag and installs the script, in a checkout of it.
+
+    `tamper` edits the file in the working tree and has git ignore the edit; `alias` stores the
+    tag object under another name and gives the block that name; `owner` makes the checkout
+    belong to that user, not to root; `program` is written into the checkout's own configuration
+    as the program that checks SSH signatures.
+    """
+    name = f"{release.tag}-{label}"
+    if owner is None:
+        work = _clone(host, name, release.bundle)
+    else:
+        work = f"/work/{name}/repo"
+        host.ok("mkdir", "-p", "/work")
+        host.put(f"/work/{name}.bundle", release.bundle)
+        host.ok("install", "-d", "-o", owner, f"/work/{name}")
+        host.ok("runuser", "-u", owner, "--", "git", "clone", "-q", f"/work/{name}.bundle", work)
+    if program is not None:
+        host.ok("git", "-C", work, "config", "gpg.ssh.program", program)
+    if alias is not None:
+        tag_object = host.ok("git", "-C", work, "rev-parse", f"refs/tags/{release.tag}").strip()
+        host.ok("git", "-C", work, "update-ref", f"refs/tags/{alias}", tag_object)
+    if tamper:
+        host.ok("git", "-C", work, "checkout", "-q", release.tag)
+        host.put(f"{work}/deploy/pkg_deploy.py", b"# not what the tag holds\n")
+        host.ok("git", "-C", work, "update-index", "--skip-worktree", "deploy/pkg_deploy.py")
+        assert host.box.run("git", "-C", work, "diff", "--quiet").code == 0  # git sees no edit
+    return host.runbook("verify-tag", {"tag": alias or release.tag}, workdir=work)
+
+
+def _install_script_by_hand(host: Host, releases: Releases) -> None:
+    """Step 7's last block: it refuses four tags and installs the tag's bytes, not the tree's."""
+    # root's own keyring trusts the OpenPGP key. Without the block's pins the tag is accepted,
+    # so it is the pins that refuse it below
+    done = host.box.run("gpg", "--batch", "--import", stdin=releases.openpgp_key)
+    assert done.code == 0, done.output
+    work = _clone(host, "unpinned", releases.openpgp.bundle)
+    signers = f"gpg.ssh.allowedSignersFile={pkg_deploy.CONFIG_DIR}/allowed_signers"
+    done = host.box.run(
+        *("git", "-C", work, "-c", "gpg.format=ssh", "-c", signers),
+        *("verify-tag", releases.openpgp.tag),
+    )
+    assert done.code == 0, done.output
+    # likewise a checkout whose own configuration names a program that agrees to everything:
+    # a tag signed by a key that is not in the signer file passes unless the command line decides
+    host.put(ALWAYS_YES_PATH, ALWAYS_YES.encode())
+    host.ok("chmod", "0755", ALWAYS_YES_PATH)
+    work = _clone(host, "swapped", releases.forged.bundle)
+    host.ok("git", "-C", work, "config", "gpg.ssh.program", ALWAYS_YES_PATH)
+    done = host.box.run(
+        *("git", "-C", work, "-c", "gpg.format=ssh", "-c", signers),
+        *("verify-tag", releases.forged.tag),
+    )
+    assert done.code == 0, done.output
+    cases: tuple[tuple[str, Release, dict[str, Any], str], ...] = (
+        # signed by a key that is not in the signer file
+        ("forged", releases.forged, {}, NO_PRINCIPAL),
+        # the same, in a checkout whose configuration swaps the checking program
+        ("swapped", releases.forged, {"program": ALWAYS_YES_PATH}, NO_PRINCIPAL),
+        # signed with OpenPGP by a key of root's keyring: nothing is checked, so nothing is said
+        ("openpgp", releases.openpgp, {}, ""),
+        # a genuine tag object stored under another name: the signature is good, the name is not
+        ("alias", releases.installer, {"alias": "v9.9.9"}, GOOD_FOR_RELEASE),
+        # a checkout that belongs to another user
+        ("owned", releases.installer, {"owner": "siteuser"}, "dubious ownership"),
+    )
+    for label, release, options, said in cases:
+        done = _by_hand(host, release, label, **options)
+        assert done.code != 0 and "script not installed" in done.output, (label, done.output)
+        assert said in done.output, (label, done.output)
+        # a signature was checked and found good only where the refusal comes after that check
+        checked = said in (NO_PRINCIPAL, GOOD_FOR_RELEASE)
+        assert (GOOD_SIGNATURE in done.output) is checked, (label, done.output)
+        assert host.box.run("test", "-e", SCRIPT).code == 1, label
+    # the file in the working tree was edited and git was told to ignore it: the tag's file is
+    # what is installed
+    done = _by_hand(host, releases.installer, "genuine", tamper=True)
+    assert done.code == 0, done.output
+    source = releases.installer.files["deploy/pkg_deploy.py"]
+    assert host.sha256(SCRIPT) == hashlib.sha256(source).hexdigest()
+    assert host.stat(SCRIPT) == "root:root 755"
+
+
+def _provision(host: Host, keys: dict[str, Path], releases: Releases) -> None:
     host.ok("apt-get", "update", "-qq")
     host.ok("apt-get", "install", "-y", "-qq", "--no-install-recommends", *PACKAGES)
     # after apt, which could pull in a real systemctl
@@ -248,42 +396,45 @@ def _provision(host: Host) -> None:
         "useradd", "--system", "--no-create-home", "-s", "/usr/sbin/nologin", "php-pkg-publisher"
     )
     host.ok("useradd", "--no-create-home", "-s", "/bin/sh", "siteuser")
-    # the deploy user needs a real shell for sshd to run the forced command; its password stays
-    # locked, as `useradd` leaves it
-    host.ok("useradd", "--create-home", "-s", "/bin/sh", "deploy")
-    host.ok("install", "-d", "-m", "0700", "-o", "deploy", "-g", "deploy", "/home/deploy/.ssh")
-    host.ok(
-        *("install", "-m", "0600", "-o", "deploy", "-g", "deploy"),
-        *("/kit/authorized_keys", "/home/deploy/.ssh/authorized_keys"),
-    )
-    host.ok("install", "-m", "0440", "/kit/sudoers", SUDOERS)
-    host.ok("visudo", "-cf", SUDOERS)
-    # the site's file system and the docroot as the runbook leaves them, links included
+    # the site's file system, and the docroot as a panel leaves it: a folder that exists
     host.ok("dd", "if=/dev/zero", "of=/site.img", "bs=1M", "count=16", "status=none")
     host.ok("mkfs.ext4", "-q", "/site.img")
     host.ok("mkdir", "-p", SITE_HOME)
     host.ok("mount", "-o", "loop", "/site.img", SITE_HOME)
-    host.ok("install", "-d", "-m", "0755", DOCROOT, f"{DOCROOT}/keyring")
-    for name in ("apt", "rpm"):
-        host.ok("ln", "-s", f"{SITE_ROOT}/current/{name}", f"{DOCROOT}/{name}")
-    host.ok("chattr", "+i", DOCROOT)
-    # the deploy's own folders; the state folder's mode is the subject of the second test
-    host.ok("install", "-d", "-m", "0755", pkg_deploy.CONFIG_DIR.as_posix())
-    for name in ("deploy.conf", "allowed_signers"):
-        host.ok("install", "-m", "0644", f"/kit/{name}", f"{pkg_deploy.CONFIG_DIR}/{name}")
-    host.ok("install", "-d", "-m", "0700", STATE, f"{STATE}/backups")
-    host.ok("install", "-m", "0750", "/kit/php-pkg-publisher-deploy", SCRIPT)
-    # the ssh client side and sshd
+    host.ok("mkdir", DOCROOT)
+    # the runbook's own commands, as written, make the lock, the deploy user and the script
+    table = {
+        "docroot": DOCROOT,
+        "docroot-parent": SITE_HOME,
+        "site-root": SITE_ROOT,
+        "deploy-user": "deploy",
+        "deploy-public-key": _key_text(keys["client"]),
+        "release-public-key": _key_text(keys["release"]),
+    }
+    done = host.runbook("chattr +i <docroot>", table)
+    assert done.code == 0, done.output
+    done = host.runbook("useradd --create-home", table)
+    assert done.code == 0, done.output
+    _install_script_by_hand(host, releases)
+    # the ssh client side and sshd, with the host key where sshd looks for one
     for name in ("client", "other"):
         host.ok("install", "-m", "0600", f"/kit/{name}_key", f"/root/{name}_key")
-    host.ok("install", "-m", "0644", "/kit/known_hosts", "/root/known_hosts")
-    host.ok("install", "-m", "0600", "/kit/server_key", "/etc/ssh/test_host_key")
+    host.ok("install", "-m", "0600", "/kit/server_key", "/etc/ssh/ssh_host_ed25519_key")
+    host.ok("install", "-m", "0644", "/kit/server_key.pub", "/etc/ssh/ssh_host_ed25519_key.pub")
     host.ok("install", "-d", "-m", "0755", "/run/sshd")
     host.ok(
-        *("/usr/sbin/sshd", "-p", PORT, "-h", "/etc/ssh/test_host_key"),
-        *("-o", "ListenAddress=127.0.0.1", "-o", "PasswordAuthentication=no"),
-        *("-E", "/var/log/sshd.log"),
+        *("/usr/sbin/sshd", "-p", PORT, "-p", "22", "-o", "ListenAddress=127.0.0.1"),
+        *("-o", "PasswordAuthentication=no", "-E", "/var/log/sshd.log"),
     )
+    # the host key lines the runbook has the operator make, for a port and for port 22
+    done = host.runbook("ssh_host_ed25519_key.pub", {"origin-host": "127.0.0.1", "ssh-port": PORT})
+    assert done.code == 0, done.output
+    # the runbook says `sshd -T` prints this, for the locked password of the deploy user
+    assert "usepam yes\n" in host.ok("/usr/sbin/sshd", "-T")
+    host.known_hosts, host.known_hosts_port_22 = (f"{line}\n" for line in done.output.splitlines())
+    assert host.known_hosts == _known_hosts(keys["server"])
+    assert host.known_hosts_port_22 == f"127.0.0.1 {_key_text(keys['server'])}\n"
+    host.put("/root/known_hosts", host.known_hosts.encode())
     for _ in range(40):
         if host.box.run("ssh-keyscan", "-p", PORT, "-T", "3", "127.0.0.1").output.strip():
             return
@@ -295,6 +446,7 @@ def _provision(host: Host) -> None:
 def host(
     request: pytest.FixtureRequest,
     keys: dict[str, Path],
+    releases: Releases,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator[Host]:
     assert docker_available(), "the container layer needs a running docker"
@@ -306,7 +458,7 @@ def host(
     ) as box:
         machine = Host(box)
         try:
-            _provision(machine)
+            _provision(machine, keys, releases)
             yield machine
         finally:
             # let go of the loop device
@@ -344,6 +496,8 @@ def test_the_publisher_user_must_be_able_to_pass_the_state_folder(
 ) -> None:
     """The new `products.yml` is loaded as the publisher user, from a folder in the state folder."""
     try:
+        # the runbook made it `0711`; closed to everyone but root, the deploy is refused
+        host.ok("chmod", "0700", STATE)
         done = host.deploy(releases.first)
         assert (done.code, done.output) == (2, "refused: products-invalid\n")
         assert host.box.run("test", "-e", "/etc/php-pkg-publisher").code == 1
@@ -451,6 +605,9 @@ def test_rollback_puts_the_last_deploy_back_and_bans_its_version(
     assert host.local("check").output == "DEPLOY CHECK PASSED\n"
     done = host.deploy(releases.third)
     assert (done.code, done.output) == (2, "refused: version-denied\n")
+    # the documented way back: the operator lifts the ban
+    assert host.local("allow", "v1.0.2").code == 0
+    assert host.ok("cat", f"{STATE}/denied.json") == "[]"
 
 
 RELEASE_WORKFLOW: Final = ROOT / ".github" / "workflows" / "release.yml"
@@ -463,7 +620,13 @@ def _expression(text: str, context: dict[str, str]) -> str:
 
 
 def _run_deploy_job(
-    host: Host, tag: str, keys: dict[str, Path], *, workdir: str, known_hosts: str
+    host: Host,
+    tag: str,
+    keys: dict[str, Path],
+    *,
+    workdir: str,
+    known_hosts: str,
+    target: str = f"ssh://deploy@127.0.0.1:{PORT}",
 ) -> tuple[int, Done]:
     """The deploy job's own scripts, read from `release.yml` and run as the runner runs them.
 
@@ -478,7 +641,7 @@ def _run_deploy_job(
         .read_text(encoding="utf-8")
         .strip(),
         "secrets.DEPLOY_KNOWN_HOSTS": known_hosts.strip(),
-        "secrets.DEPLOY_TARGET": f"ssh://deploy@127.0.0.1:{PORT}",
+        "secrets.DEPLOY_TARGET": target,
     }
     scripts = [step for step in workflow["jobs"]["deploy"]["steps"] if "run" in step]
     host.ok("rm", "-rf", RUNNER_TEMP)
@@ -520,9 +683,7 @@ def test_the_workflow_steps_deploy_a_tag_through_the_locked_key(
     commit = host.ok("git", "-C", work, "rev-parse", f"{tag}^{{commit}}").strip()
     host.ok("git", "-C", work, "update-ref", f"refs/tags/{tag}", commit)
     assert host.ok("git", "-C", work, "cat-file", "-t", f"refs/tags/{tag}").strip() == "commit"
-    ended, done = _run_deploy_job(
-        host, tag, keys, workdir=work, known_hosts=_known_hosts(keys["server"])
-    )
+    ended, done = _run_deploy_job(host, tag, keys, workdir=work, known_hosts=host.known_hosts)
     # the last step prints what a public log shows, which is the host's one line
     assert (ended, done.output) == (2, f"deployed {tag}\n")
     assert host.ok("git", "-C", work, "cat-file", "-t", f"refs/tags/{tag}").strip() == "tag"
@@ -543,7 +704,7 @@ def test_the_workflow_stops_at_a_lightweight_tag_and_at_a_host_key_it_does_not_k
     )
     host.ok("git", "clone", "-q", "/work/light.git", "/work/light")
     ended, done = _run_deploy_job(
-        host, "v1.0.6", keys, workdir="/work/light", known_hosts=_known_hosts(keys["server"])
+        host, "v1.0.6", keys, workdir="/work/light", known_hosts=host.known_hosts
     )
     assert ended == 0 and done.code != 0, done.output
     # it stopped at the type check: the tag was fetched, it is a commit, and no bundle was made
@@ -581,7 +742,55 @@ def test_a_tag_the_host_refuses_fails_the_job_and_only_the_hosts_line_reaches_th
         releases.stranger.tag,
         keys,
         workdir=work,
-        known_hosts=_known_hosts(keys["server"]),
+        known_hosts=host.known_hosts,
     )
     assert (ended, done.code, done.output) == (1, 2, "refused: signature-invalid\n")
     assert host.sha256(f"{STATE}/manifest.json") == manifest
+
+
+def test_the_host_key_line_and_the_target_of_port_22_are_the_bare_host(
+    host: Host, releases: Releases, keys: dict[str, Path]
+) -> None:
+    """The second form the runbook gives: no brackets and no port, for sshd on port 22."""
+    work = _clone(host, "port22", releases.workflow.bundle)
+    ended, done = _run_deploy_job(
+        host,
+        releases.workflow.tag,
+        keys,
+        workdir=work,
+        known_hosts=host.known_hosts_port_22,
+        target="ssh://deploy@127.0.0.1",
+    )
+    # the tag may be the one in place, which the host answers as it answers a new one
+    assert (ended, done.output) == (2, f"deployed {releases.workflow.tag}\n")
+
+
+def test_a_deploy_by_hand_runs_the_commands_of_the_runbook_and_keeps_every_check(
+    host: Host, releases: Releases
+) -> None:
+    tag = releases.byhand.tag
+    work = _clone(host, "byhand", releases.byhand.bundle)
+    table = {"bundle-file": "/work/byhand.out.bundle", "tag": tag}
+    done = host.runbook("git bundle create <bundle-file> refs/tags/<tag>", table, workdir=work)
+    assert done.code == 0 and done.output.endswith(f"deployed {tag}\n"), done.output
+    assert f'"version": "{tag}"' in host.ok("cat", f"{STATE}/manifest.json")
+    assert host.local("check").output == "DEPLOY CHECK PASSED\n"
+
+
+def test_a_keyring_package_is_recorded_before_the_check_accepts_it(
+    host: Host, releases: Releases
+) -> None:
+    """The flag on the docroot does not stop entries inside `keyring/`; the record does."""
+    if host.box.run("test", "-e", f"{STATE}/manifest.json").code != 0:
+        assert host.deploy(releases.first).code == 0  # run alone, the check needs a deploy
+    package = f"{DOCROOT}/keyring/rabib-test.deb"
+    host.put(package, b"package")
+    done = host.local("check")
+    assert done.code == 1 and "FAIL: keyring file not recorded: rabib-test.deb\n" in done.output
+    assert host.local("record", package).code == 0
+    assert host.local("check").output == "DEPLOY CHECK PASSED\n"
+    host.ok("rm", package)
+    done = host.local("check")
+    assert done.code == 1 and "FAIL: keyring file missing: rabib-test.deb\n" in done.output
+    assert host.local("forget", package).code == 0
+    assert host.local("check").output == "DEPLOY CHECK PASSED\n"

@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Fojle Rabbi (Rabib)
+[Unit]
+Description=Compare the host with what the last deploy wrote
+After=local-fs.target
+OnFailure=php-pkg-publisher-notify@%n.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=5min
+# Root, because a panel may place the docroot under /home, which the publisher's units
+# (ProtectHome=true) cannot see; here it is read-only. The check only reads, apart from the lock
+# file in the state folder, and it exits 1 with one line for each difference, which the journal
+# keeps; the failure alert names the unit.
+ExecStart=/usr/local/sbin/php-pkg-publisher-deploy check
+ReadWritePaths=/var/lib/php-pkg-publisher-deploy
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
+UMask=0077
+RestrictAddressFamilies=AF_UNIX

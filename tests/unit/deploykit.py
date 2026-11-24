@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Final
 
 GIT: Final = "/usr/bin/git"
+GPG: Final = "/usr/bin/gpg"
+GPGCONF: Final = "/usr/bin/gpgconf"
 SSH_KEYGEN: Final = "/usr/bin/ssh-keygen"
+_IDENTITY: Final = ["-c", "user.name=T", "-c", "user.email=t@example.invalid"]
+_OPENPGP_USER: Final = "openpgp@example.invalid"
 ENVIRONMENT: Final = {
     "PATH": "/usr/bin:/bin",
     "LC_ALL": "C",
@@ -23,15 +27,47 @@ ENVIRONMENT: Final = {
 }
 
 
-def run(arguments: list[str], cwd: Path | None = None) -> str:
+def run(
+    arguments: list[str], cwd: Path | None = None, *, environment: dict[str, str] | None = None
+) -> str:
     done = subprocess.run(  # noqa: S603
-        arguments, cwd=cwd, env=ENVIRONMENT, capture_output=True, check=True, text=True
+        arguments,
+        cwd=cwd,
+        env={**ENVIRONMENT, **(environment or {})},
+        capture_output=True,
+        check=True,
+        text=True,
     )
     return done.stdout
 
 
 def generate_key(path: Path) -> None:
     run([SSH_KEYGEN, "-q", "-t", "ed25519", "-N", "", "-f", os.fspath(path)])
+
+
+def _commit(folder: Path, files: dict[str, bytes], label: str) -> Path:
+    """A repository with one commit holding `files`."""
+    repo = folder / f"repo-{label}"
+    repo.mkdir()
+    run([GIT, "init", "-q", "-b", "main"], repo)
+    for name, data in files.items():
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    run([GIT, "add", "-A"], repo)
+    run([GIT, *_IDENTITY, "commit", "-q", "-m", "x"], repo)
+    return repo
+
+
+def _bundle(repo: Path, tag: str) -> bytes:
+    done = subprocess.run(  # noqa: S603
+        [GIT, "bundle", "create", "-", tag],
+        cwd=repo,
+        env=ENVIRONMENT,
+        capture_output=True,
+        check=True,
+    )
+    return done.stdout
 
 
 def signed_bundle(
@@ -43,26 +79,46 @@ def signed_bundle(
     signer: str | None = "release",
 ) -> bytes:
     """A bundle of one tag over a commit holding `files`, signed by the named key."""
-    repo = folder / f"repo-{tag}-{signer}"
-    repo.mkdir()
-    base = ["-c", "gpg.format=ssh", "-c", "user.name=T", "-c", "user.email=t@example.invalid"]
-    run([GIT, "init", "-q", "-b", "main"], repo)
-    for name, data in files.items():
-        path = repo / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
-    run([GIT, "add", "-A"], repo)
-    run([GIT, *base, "commit", "-q", "-m", "x"], repo)
+    repo = _commit(folder, files, f"{tag}-{signer}")
+    base = ["-c", "gpg.format=ssh", *_IDENTITY]
     if signer is None:
         run([GIT, *base, "tag", "-a", tag, "-m", f"Release {tag}"], repo)
     else:
         key = ["-c", f"user.signingkey={keys[signer]}"]
         run([GIT, *base, *key, "tag", "-s", tag, "-m", f"Release {tag}"], repo)
-    done = subprocess.run(  # noqa: S603
-        [GIT, "bundle", "create", "-", tag],
-        cwd=repo,
-        env=ENVIRONMENT,
-        capture_output=True,
-        check=True,
+    return _bundle(repo, tag)
+
+
+def openpgp_bundle(folder: Path, files: dict[str, bytes], tag: str) -> tuple[bytes, bytes]:
+    """A bundle of one tag signed with OpenPGP, and the armored public key that verifies it."""
+    home = folder / f"gnupg-{tag}"
+    home.mkdir(mode=0o700)
+    environment = {"GNUPGHOME": os.fspath(home)}
+    gpg = [GPG, "--batch", "--no-tty"]
+    run(
+        [
+            *gpg,
+            "--passphrase",
+            "",
+            "--quick-generate-key",
+            _OPENPGP_USER,
+            "ed25519",
+            "sign",
+            "never",
+        ],
+        environment=environment,
     )
-    return done.stdout
+    try:
+        repo = _commit(folder, files, f"{tag}-openpgp")
+        base = ["-c", "gpg.format=openpgp", "-c", f"gpg.program={GPG}", *_IDENTITY]
+        key = ["-c", f"user.signingkey={_OPENPGP_USER}"]
+        run(
+            [GIT, *base, *key, "tag", "-s", tag, "-m", f"Release {tag}"],
+            repo,
+            environment=environment,
+        )
+        public = run([*gpg, "--armor", "--export", _OPENPGP_USER], environment=environment)
+    finally:
+        # the agent the key generation started would keep the folder busy
+        run([GPGCONF, "--kill", "all"], environment=environment)
+    return _bundle(repo, tag), public.encode()

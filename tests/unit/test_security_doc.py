@@ -10,6 +10,8 @@ import re
 from pathlib import Path
 from typing import Final
 
+import pkg_deploy
+
 from publisher import metadata, verify
 
 DOC: Final = Path(__file__).resolve().parents[2] / "docs" / "security.md"
@@ -34,6 +36,14 @@ def test_the_validity_period_in_the_notes_is_the_one_the_metadata_uses() -> None
 def test_the_notes_say_what_the_rpm_check_requires() -> None:
     assert "digests signatures OK" in TEXT
     assert "exits 0 for an unsigned rpm" in TEXT
+
+
+def test_the_deploy_notes_name_the_refusals_the_script_has() -> None:
+    (section,) = re.findall(r"## The deploy channel\n(.*?)\n## ", TEXT, re.DOTALL)
+    for code in ("signature-invalid", "tag-invalid", "version-older", "version-denied"):
+        assert f"`{code}`" in section, code
+        assert code in pkg_deploy.CODES, code
+    assert "rotate it, change `allowed_signers`" in " ".join(section.split())
 
 
 def test_the_notes_carry_no_fingerprint_and_no_host_detail() -> None:

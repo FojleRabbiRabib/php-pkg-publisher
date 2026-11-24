@@ -316,6 +316,26 @@ All notable changes to this project are documented here. The format follows
   would name the target), so the log of this public repository shows nothing else. The host test
   runs the job's own scripts against the real sshd and deploy script, and shows that a lightweight
   tag stops the job before the bundle is made and that an unpinned host key stops it at ssh.
+- Deploy check units (`php-pkg-publisher-deploy-check.service` and `.timer`, `publisher`): an
+  hourly run, as root, of `php-pkg-publisher-deploy check`, which reports every difference
+  between the host and what the last deploy wrote and fails, so the notifier alerts. It runs
+  outside the publisher's units because a panel may place the docroot under `/home`, which their
+  `ProtectHome=true` hides; for the check it is read-only. A test ties the deploy script's lists
+  of schedules and services to the units on disk, so a new unit cannot keep running through a
+  deploy.
+- Runbook and security notes for the deploy (`docs`): the first deploy now installs the code,
+  `products.yml`, the units and the two web files, so setting up the host copies only the deploy
+  script by hand, and only after its tag verifies the way the script verifies one (SSH signatures
+  only, the checking program fixed on the command line so a checkout's own configuration cannot
+  swap it, the signed name compared with the ref); the file installed is the tag's own, never the
+  working tree's. New steps give the deploy user (`/bin/sh`, locked password), its key locked to
+  the script with `restrict`, the one sudo line with no arguments, the files the script reads, and
+  the modes that work (state folder `0711`, backups `0700`). "Deploying a change" has the GitHub
+  setup (the `production` environment limited to `v*` tags, three secrets, the host key line for a
+  port and for port 22), the fixed lines, exit codes and refusal codes, the local commands, how to
+  recover from a deploy that did not finish (`rollback` starts no units), and a deploy by hand.
+  The host test runs the runbook's own commands, and tests tie its tables and examples to the
+  script.
 - Runbook section "Setting up the host" (`docs`): the order of a first set-up as root. Code owned
   by root, settings with their owners and modes, the webhook secret folder, the signing subkey
   import (the passphrase is removed offline, in a throwaway home; the host home must show the

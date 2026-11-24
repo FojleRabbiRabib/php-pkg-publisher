@@ -4,7 +4,9 @@ How to configure the publisher and the commands you use day to day. It covers wh
 publishing host as the publisher user, and how to start, stop and recover its systemd units; web
 server and CDN steps are host-specific and are not here. Placeholders in angle brackets are yours to fill in:
 `<publisher-user>`, `<site-root>`, `<docroot>`, `<docroot-parent>`, `<origin-public-ip>`, `<repo>`,
-`<tag>`, `<generation>`.
+`<tag>`, `<generation>`, and for the deploy `<deploy-user>`, `<deploy-public-key>`,
+`<release-public-key>`, `<deploy-key-file>`, `<origin-host>`, `<ssh-port>`, `<bundle-file>`,
+`<keyring-file>`.
 
 ## What runs
 
@@ -16,9 +18,12 @@ server and CDN steps are host-specific and are not here. Placeholders in angle b
 | `php-pkg-publisher-watch.service` | The hourly watch; it shares no code path with the run. |
 | `php-pkg-publisher-watch.timer` | Starts the watch hourly. |
 | `php-pkg-publisher-notify@.service` | Tells the operator that the named unit failed. |
+| `php-pkg-publisher-deploy-check.service` | Compares the host with what the last deploy wrote; it fails, and the failure is alerted, when anything differs. Runs as root. |
+| `php-pkg-publisher-deploy-check.timer` | Starts the check hourly. |
 
-The units run as `php-pkg-publisher`, from `/opt/php-pkg-publisher`, with the settings in
-`/etc/php-pkg-publisher/publisher.yml`. They are in `deploy/systemd/`.
+The publisher's units run as `php-pkg-publisher`, from `/opt/php-pkg-publisher`, with the settings
+in `/etc/php-pkg-publisher/publisher.yml`. The deploy check runs as root, because the docroot
+belongs to the site (see "Deploying a change"). They are in `deploy/systemd/`.
 
 The watch alerts, at most once a day for each, when the GitHub token has fewer than 30 days left,
 the origin certificate fewer than 21, the served `InRelease` is older than 3 days, its
@@ -126,10 +131,13 @@ lock it on.
 
 ## Setting up the host
 
-Do these steps in order, as root, from a checkout of a tag whose signature you have verified. The
-commands were run on a clean Ubuntu 22.04 container; what the web server and systemd do with the
-result is checked on the staging site, not here. `<docroot>` is the web server's document root for
-the site; `<site-root>` is outside it.
+Do these steps in order, as root, from a checkout of the release tag you will deploy (step 7
+checks its signature before anything from it is installed). The commands were run on a clean
+Ubuntu 22.04 container; what the web server and systemd do with the result is checked on the
+staging site, not here. `<docroot>` is the web server's document root for the site; `<site-root>`
+is outside it. Nothing from the checkout is copied by hand except the deploy script (step 7): the
+first deploy (step 8) installs the code, `products.yml`, the units and the two web files, so every
+later deploy replaces exactly what the first one put there.
 
 One rule decides the layout: the web server's user runs PHP, so it must never be able to change
 anything that runs as the publisher user. Every folder on the path to the code, the settings, the
@@ -143,30 +151,19 @@ webhook secret. `<site-root>` must be the site path in the service's `ReadWriteP
 1. Install the tools a run needs: `python3-yaml`, `gnupg`, `rpm`, `apt-utils` and `createrepo-c`
    from the distribution, and `cosign` as described under "Installing cosign" below.
 
-2. Install the code, owned by root and writable by no one else (the `a+rX` keeps it readable
-   whatever root's umask is):
+2. Create the publisher user and its directories, with the commands of the section above.
 
-   ```sh
-   install -d -m 0755 -o root -g root /opt/php-pkg-publisher
-   cp -r publisher /opt/php-pkg-publisher/
-   chown -R root:root /opt/php-pkg-publisher
-   chmod -R go-w,a+rX /opt/php-pkg-publisher
-   ```
-
-3. Create the publisher user and its directories, with the commands of the section above.
-
-4. Put the settings in `/etc/php-pkg-publisher/`:
+3. Put the settings in `/etc/php-pkg-publisher/`. `products.yml`, the file `publisher.yml` points
+   at, is not among them: it comes with the first deploy, owned by root and mode `0644`.
 
    | File | Owner, mode | Content |
    |---|---|---|
-   | `products.yml` | root, `0644` | The one in the checkout. |
    | `exclude.yml` | root, `0644` | `exclude: []`. A missing file stops every run. |
    | `publisher.yml` | root, `0644` | The settings above, filled in. |
    | `rpm-signing.asc`, `signing-certificate.asc` | root, `0644` | Public keys only. |
    | `github.token`, `telegram.conf` | `<publisher-user>`, `0600` | The secrets above. |
 
    ```sh
-   install -m 0644 products.yml /etc/php-pkg-publisher/products.yml
    install -m 0644 /dev/null /etc/php-pkg-publisher/exclude.yml
    printf 'exclude: []\n' > /etc/php-pkg-publisher/exclude.yml
    install -m 0644 <rpm-key-file> /etc/php-pkg-publisher/rpm-signing.asc
@@ -175,7 +172,7 @@ webhook secret. `<site-root>` must be the site path in the service's `ReadWriteP
    install -m 0600 -o <publisher-user> <alert-file> /etc/php-pkg-publisher/telegram.conf
    ```
 
-5. Store the webhook secret where the receiver reads it. The folder lets the web server's group in
+4. Store the webhook secret where the receiver reads it. The folder lets the web server's group in
    and no one else; the secret must hold at least 16 bytes:
 
    ```sh
@@ -184,7 +181,7 @@ webhook secret. `<site-root>` must be the site path in the service's `ReadWriteP
    test "$(wc -c < /etc/php-pkg-publisher-webhook/secret)" -ge 16
    ```
 
-6. Import the signing subkey. The signer needs a subkey with no passphrase, so remove the
+5. Import the signing subkey. The signer needs a subkey with no passphrase, so remove the
    passphrase on the offline machine, in a throwaway home, and export the subkey alone (the export
    holds no master secret key). The new export is not protected: keep it private and delete it
    after the import.
@@ -221,32 +218,32 @@ webhook secret. `<site-root>` must be the site path in the service's `ReadWriteP
    runuser -u <publisher-user> -- gpgconf --homedir <signing-home> --kill gpg-agent
    ```
 
-7. Put the web files in `<docroot>`. `sync.php` is served as `/hooks/sync` by the rule in
-   `.htaccess`. Root owns every file there: the publisher never writes in `<docroot>` (it flips
-   `current` inside `<site-root>`) and the web server's user only reads. Root makes the two links
-   once; they point into `<site-root>`, so the links never change. `keyring/` holds the two keyring
-   packages, built offline and placed by hand.
+6. Lock the docroot. The deploy (step 8) puts the two web files in it: `sync.php`, which the rule
+   in `.htaccess` serves as `/hooks/sync`, and `.htaccess`. Root owns every file there: the
+   publisher never writes in `<docroot>` (it flips `current` inside `<site-root>`) and the web
+   server's user only reads. Root makes the two links once; they point into `<site-root>`, so the
+   links never change. `keyring/` holds the two keyring packages, built offline and placed by hand;
+   record each with the deploy script (see "Deploying a change").
 
    Two locks keep the web server's user from replacing the folder, and with it the redirect rules
    and the keyring packages: `<docroot-parent>` is owned by root, so nobody else can rename
    `<docroot>`, and `<docroot>` carries the immutable flag, which stops a rename, a delete and any
    new entry in it, even by its owner. `<docroot>` must already exist and hold only the site's
-   files: the commands make root the owner of everything in it. The site user can no longer create
-   entries in `<docroot-parent>`, so anything it must write there (logs, caches, uploads) has to
-   live in folders it already owns or somewhere else. The flag needs a file system that supports
-   it (ext4 and xfs do), and a tool
-   that writes into `<docroot>`, such as a certificate client leaving challenge files there, then
-   fails: keep those files elsewhere. To change a file later, clear the flag, change it and set the
-   flag again. A control panel may reset an owner, a mode or the flag when it fixes permissions:
-   run the check below after any panel action.
+   files: the commands make root the owner of everything in it, and the deploy check reports every
+   entry except `.htaccess`, `sync.php`, `apt`, `rpm` and `keyring`, so remove a panel's default
+   files first. The site user can no longer create entries in `<docroot-parent>`, so anything it
+   must write there (logs, caches, uploads) has to live in folders it already owns or somewhere
+   else. The flag needs a file system that supports it (ext4 and xfs do), and a tool that writes
+   into `<docroot>`, such as a certificate client leaving challenge files there, then fails: keep
+   those files elsewhere. The deploy clears the flag and sets it again around its own writes: do
+   not change files here by hand. A control panel may reset an owner, a mode or the flag when it
+   fixes permissions: run the check below after any panel action.
 
    ```sh
    chown root:root <docroot-parent>
    chmod 0755 <docroot-parent>
    chattr -i <docroot>
    install -d -m 0755 -o root -g root <docroot> <docroot>/keyring
-   install -m 0644 -o root web/docroot.htaccess <docroot>/.htaccess
-   install -m 0644 -o root web/sync.php <docroot>/sync.php
    ln -s <site-root>/current/apt <docroot>/apt
    ln -s <site-root>/current/rpm <docroot>/rpm
    chown -hR root:root <docroot>
@@ -256,10 +253,86 @@ webhook secret. `<site-root>` must be the site path in the service's `ReadWriteP
 
    The two links are made once: on a repeat, leave out the `ln` lines.
 
-8. Install the units, then enable them as in "Starting, stopping and recovering the units":
+7. Set up the deploy: the user the release workflow logs in as, its locked key, the one sudo line,
+   the files the script reads, and the script itself, which is the only file you copy by hand.
+   `<deploy-public-key>` is the public half of a new key pair made for this alone (see "Deploying a
+   change"), written as the key type and the key, such as `ssh-ed25519 AAAA...`, with no comment.
+   `<release-public-key>` is the public half of the key you sign release tags with, in the same
+   form. The user needs `/bin/sh`: sshd runs the forced command through the shell of the user, and
+   a `nologin` shell refuses it. Its password stays locked, as `useradd` leaves it, which needs
+   `UsePAM yes` in sshd (the default on Debian and Ubuntu, and the setting this was run with:
+   `sshd -T` prints `usepam yes`). The sudoers line is written to a temporary file and installed
+   only if `visudo` accepts it, because a broken file in `/etc/sudoers.d` stops sudo for everyone.
+   The key allows one thing: it runs the script, through sudo, with no arguments, and with no
+   terminal and no forwarding (`restrict`); sudo allows that one command with no arguments (the
+   empty `""`). The folder of the state may be entered by everyone (`0711`), because the new code
+   is read, as the publisher user, from a folder inside it before anything is replaced; the
+   backups stay closed.
 
    ```sh
-   install -m 0644 deploy/systemd/* /etc/systemd/system/
+   useradd --create-home --shell /bin/sh <deploy-user>
+   install -d -m 0700 -o <deploy-user> -g <deploy-user> /home/<deploy-user>/.ssh
+   install -m 0600 -o <deploy-user> -g <deploy-user> /dev/null /home/<deploy-user>/.ssh/authorized_keys
+   printf '%s\n' 'restrict,command="/usr/bin/sudo /usr/local/sbin/php-pkg-publisher-deploy" <deploy-public-key>' \
+     > /home/<deploy-user>/.ssh/authorized_keys
+   sudoers="$(mktemp)"
+   printf '<deploy-user> ALL=(root) NOPASSWD: /usr/local/sbin/php-pkg-publisher-deploy ""\n' \
+     > "$sudoers"
+   visudo -cf "$sudoers" && install -m 0440 "$sudoers" /etc/sudoers.d/php-pkg-publisher-deploy
+   rm "$sudoers"
+   install -d -m 0755 /etc/php-pkg-publisher-deploy
+   install -m 0644 /dev/null /etc/php-pkg-publisher-deploy/deploy.conf
+   printf 'docroot=<docroot>\nsite_root=<site-root>\n' > /etc/php-pkg-publisher-deploy/deploy.conf
+   install -m 0644 /dev/null /etc/php-pkg-publisher-deploy/allowed_signers
+   printf 'php-pkg-publisher-release namespaces="git" <release-public-key>\n' \
+     > /etc/php-pkg-publisher-deploy/allowed_signers
+   install -d -m 0711 /var/lib/php-pkg-publisher-deploy
+   install -d -m 0700 /var/lib/php-pkg-publisher-deploy/backups
+   ```
+
+   If sshd has an `AllowUsers` or `AllowGroups` line, it must name `<deploy-user>`.
+
+   Then install the script from your checkout. It is the one file the deploy cannot check for
+   itself, because root runs it before any deploy has happened, so check the tag first against
+   the signer file just written, with the same settings the script uses: only an SSH signature
+   counts (a tag signed with OpenPGP would otherwise be checked by `gpg` against root's own
+   keyring), the global and system git configuration is not read, the settings that choose the
+   program that checks are fixed on the command line (so the checkout's own configuration cannot
+   swap it for one that always agrees), and the name inside the signed tag must be `<tag>` (git
+   checks the signed object, not the name it is stored under). The file installed is the one in
+   the tag itself, read with `git cat-file`, not the file in the working tree, which `git diff`
+   can be told to ignore. Read the exit status, not the first line: for a valid signature by a
+   key that is not in the file, git prints `Good "git" signature`, then `No principal matched.`,
+   and exits 1. Every step of the block depends on the one before it (`set -e` would not do
+   this: bash ignores it in a subshell that is followed by `||`), so it stops at the first one
+   that fails and then prints `script not installed`. The checkout must be made as root: git
+   refuses one that belongs to another user (`dubious ownership`), and `safe.directory` must not
+   be set to get around that.
+
+   ```sh
+   (
+     script="$(mktemp)" && trap 'rm -f "$script"' EXIT \
+       && env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git \
+         -c gpg.format=ssh \
+         -c gpg.ssh.allowedSignersFile=/etc/php-pkg-publisher-deploy/allowed_signers \
+         -c gpg.ssh.program=/usr/bin/ssh-keygen \
+         -c gpg.program=/bin/false -c gpg.openpgp.program=/bin/false -c gpg.x509.program=/bin/false \
+         verify-tag <tag> \
+       && test "$(git for-each-ref --format='%(tag)' refs/tags/<tag>)" = <tag> \
+       && git cat-file blob <tag>:deploy/pkg_deploy.py > "$script" \
+       && install -m 0755 "$script" /usr/local/sbin/php-pkg-publisher-deploy
+   ) || { echo 'script not installed' >&2; false; }
+   ```
+
+8. Deploy the first tag by hand, from the same checkout. This installs the
+   code in `/opt/php-pkg-publisher/publisher`, `products.yml`, the units and the two web files,
+   and records them, so that later deploys and the check know what they put there. It prints
+   `deployed <tag>`. Then enable the units, with the deploy check last, as in "Starting,
+   stopping and recovering the units":
+
+   ```sh
+   git bundle create <bundle-file> refs/tags/<tag>
+   /usr/local/sbin/php-pkg-publisher-deploy < <bundle-file>
    ```
 
 Check the result. The web server's user must read the webhook secret and write in the nudge
@@ -318,12 +391,15 @@ A tag that fails is retried. Once it has failed at least 5 times and the first f
 
 ## Starting, stopping and recovering the units
 
-Install the six files of `deploy/systemd/` into `/etc/systemd/system/`, then enable the path unit
-and the two timers. Never enable the service itself: they start it.
+The first deploy installs the eight files of `deploy/systemd/` into `/etc/systemd/system/`. Then
+enable the path unit and the three timers. Never enable the services themselves: the path unit and
+the timers start them. Enable the deploy check only after the first deploy: before it, the check
+fails with "no deploy recorded", and the failure is alerted every hour.
 
 ```sh
 systemctl daemon-reload
 systemctl enable --now php-pkg-publisher.path php-pkg-publisher.timer php-pkg-publisher-watch.timer
+systemctl enable --now php-pkg-publisher-deploy-check.timer
 ```
 
 How a run ends:
@@ -472,7 +548,9 @@ A release is a signed tag on `main`:
    python3 tools/release_notes.py v<version>
    ```
 
-3. Tag the merge commit, signed, and push the tag:
+3. Tag the merge commit, signed with the SSH key whose public half is the `<release-public-key>` in
+   `allowed_signers` on the host (`gpg.format` is `ssh` and `user.signingkey` names that key), and
+   push the tag:
 
    ```sh
    git tag -s v<version> -m "Release v<version>"
@@ -482,19 +560,139 @@ A release is a signed tag on `main`:
 The `Release` workflow starts on the pushed tag, runs every CI gate, and then makes the GitHub
 Release titled `PHP Package Publisher – v<version>` with those notes. It makes no release when
 the tag is not `vX.Y.Z` (no leading zeros), is not an annotated tag, is not on `main`, when the
-changelog has no dated section for it, or when `[Unreleased]` still has entries. It does not
-deploy, and it does not check the tag's signature: the host does that before it uses a tag, as
-described below.
+changelog has no dated section for it, or when `[Unreleased]` still has entries. After the
+release, its `deploy` job sends the tag to the host. The workflow does not check the tag's
+signature: the host does that before it uses a tag, as described below. Do the GitHub setup of
+"Deploying a change" before the first tag: until then, a tag makes the release and the deploy job
+fails.
 
 ## Deploying a change
 
-The host runs a signed tag, deployed by hand, never an automatic pull:
+A pushed tag deploys itself, and the host never pulls. After the `Release` workflow has made the
+release, its `deploy` job sends a `git bundle` of the tag over ssh to the host, to the locked key
+of step 7 of "Setting up the host". The host does not trust the job. The script accepts a bundle
+only when it holds exactly one ref, an annotated tag named `vX.Y.Z` whose signed name is the same,
+signed by the key in `allowed_signers`, and the version is not older than the last deploy and was
+not rolled back. Only then does it read the known files from the signed commit, load the new
+`products.yml` as the publisher user, stop the units, replace each file by a rename, replace
+itself last, and start the units again. Whatever fails after the first file changed puts the
+backup back. The signing key never leaves you: what GitHub holds can only carry bundles.
+
+### Before the first tag
+
+1. Make a key pair for this alone, never the key that signs tags. Its public half is the
+   `<deploy-public-key>` of step 7; its private half goes into a GitHub secret and nowhere else:
+
+   ```sh
+   ssh-keygen -q -t ed25519 -N '' -f <deploy-key-file>
+   ```
+
+   Delete the file once the secret is saved.
+
+2. In the repository's settings, create the environment `production` and limit its deployment
+   tags to `v*`. Do this first: GitHub creates an environment that a workflow names but that does
+   not exist yet, with no rule at all.
+
+3. Add three secrets to that environment (not to the repository):
+
+   | Secret | Content |
+   |---|---|
+   | `DEPLOY_SSH_KEY` | The private key of step 1, whole. |
+   | `DEPLOY_KNOWN_HOSTS` | The host key line below. |
+   | `DEPLOY_TARGET` | `ssh://<deploy-user>@<origin-host>:<ssh-port>`, or without `:<ssh-port>` for port 22. |
+
+4. Take the host key line from the host itself, never from a scan over the network. On a port
+   other than 22 the line names the host in brackets with the port, as the `known_hosts` format
+   has it; on port 22 it is the bare host. Both forms were run against OpenSSH 8.9, each with its
+   own target:
+
+   ```sh
+   printf '[<origin-host>]:<ssh-port> %s\n' "$(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)"
+   printf '<origin-host> %s\n' "$(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)"
+   ```
+
+5. `<origin-host>` must reach sshd directly: the public name of the site is behind a CDN that
+   carries no ssh, so use the origin's address or a name the CDN does not proxy. The port must
+   accept GitHub-hosted runners, whose addresses are many and change.
+
+### What the log shows
+
+The workflow log of a public repository is public, so the host prints one fixed line and ssh is
+quiet; the detail goes to the journal (`journalctl -t php-pkg-publisher-deploy`). Anything but the
+first row is a failed job:
+
+| Line | Exit | Meaning |
+|---|---|---|
+| `deployed <tag>` | 0 | Done. The same tag again changes nothing and prints this too. |
+| `refused: <code>` | 2 | Nothing changed. The code says why (below). |
+| `refused: rolled-back` | 3 | A step failed after files changed and the backup was put back; the units run again. |
+| `refused: step-failed` | 2 or 3 | A command failed, or an unexpected error; look in the journal. |
+| `broken: restore failed` | 4 | The backup could not be put back either: see "A deploy that did not finish". |
+| nothing | 255 | ssh could not log in: the host key, the key, the target or the network. |
+
+| Code | Meaning |
+|---|---|
+| `bundle-invalid` | Not a bundle, one that does not verify, or one that cannot be fetched. |
+| `bundle-size` | Over 64 MiB. |
+| `config-invalid` | `deploy.conf` or `allowed_signers` is missing, not root's, writable by others, or malformed. |
+| `host-busy` | A deploy, a rollback or a command is running. Run the job again. |
+| `not-root` | The script was not started as root. |
+| `products-invalid` | The new `products.yml` does not load, or the publisher user cannot read the new code (the state folder must be `0711`). |
+| `ref-invalid` | The bundle does not hold exactly one `refs/tags/vX.Y.Z`. |
+| `rolled-back` | As above. |
+| `signature-invalid` | The tag is unsigned or not signed by the key in `allowed_signers`. |
+| `state-invalid` | The state folder, the manifest, a backup or the marker is wrong, or an earlier deploy did not finish. |
+| `step-failed` | A command failed, such as `git`, or an unexpected error. |
+| `tag-invalid` | A lightweight tag, a signed name that differs from the ref, or a name that is not `vX.Y.Z`. |
+| `target-invalid` | A file the deploy would replace is not a regular file. |
+| `tree-invalid` | The commit holds a link, a missing required file, a stray unit file, or a file over the size limits. |
+| `usage` | A wrong local command, or a rollback with no backup. |
+| `version-denied` | That version was rolled back; `allow` lifts the ban. |
+| `version-older` | Older than the last deploy. |
+
+### Commands on the host
+
+Run them as root. Each takes the lock of a deploy, so a command and a deploy never overlap.
+
+| Command | Use |
+|---|---|
+| `php-pkg-publisher-deploy rollback` | Undo the last deploy, or finish undoing one that did not end. It bans that version, so a replay of its tag is refused, and uses up its backup, so a second rollback goes one deploy further back. The 5 newest backups are kept. |
+| `php-pkg-publisher-deploy allow v<version>` | Lift the ban on a version that was rolled back. |
+| `php-pkg-publisher-deploy check` | Compare the host with the last deploy: the hash, owner and mode of every file it wrote, the immutable flag, the folder above the docroot, the two links, every entry in the docroot and the code, and the keyring packages. It prints one `FAIL:` line for each difference and exits 1, or prints `DEPLOY CHECK PASSED`. The hourly timer runs it, and a failure is alerted. While a deploy runs it prints that it skipped and exits 0. |
+| `php-pkg-publisher-deploy record <keyring-file>` | Record the hash of a keyring package you placed in `<docroot>/keyring`, owned by root and writable by no one else. The flag on `<docroot>` does not stop entries inside `keyring/`, so the check would report an unrecorded file. |
+| `php-pkg-publisher-deploy forget <keyring-file>` | Drop that record, after you removed the file. |
+
+### A deploy that did not finish
+
+A deploy that is cut off, or whose restore failed, leaves a marker, and every later deploy is
+refused with `state-invalid` until `rollback` has run. The hourly check says so too, once its
+timer runs again (a deploy stops it, and a cut-off deploy leaves it stopped). The units
+were stopped for the deploy, and `rollback` starts only what it found running, so start them
+again by hand once it has finished:
 
 ```sh
-git fetch --tags
-git verify-tag <tag>
-git checkout <tag>
+php-pkg-publisher-deploy rollback
+systemctl start php-pkg-publisher.path php-pkg-publisher.timer php-pkg-publisher-watch.timer php-pkg-publisher-deploy-check.timer
 ```
+
+`rollback` bans the version it undid, so the same tag is refused with `version-denied` when the
+job runs again. Run `php-pkg-publisher-deploy allow v<version>` first, or deploy a newer tag.
+
+### Deploying by hand
+
+When GitHub cannot run the job, do what step 8 of "Setting up the host" does with the new tag: make
+its bundle in a checkout and give it to the script as root. Every check of the script still runs.
+
+```sh
+git bundle create <bundle-file> refs/tags/<tag>
+/usr/local/sbin/php-pkg-publisher-deploy < <bundle-file>
+```
+
+### Changing the release key
+
+The key in `allowed_signers` is the root of trust of the deploy. To change it, edit that file on
+the host to hold the new `<release-public-key>`; a tag signed by the old key is refused from then
+on. Do it as part of the change that moves the signing to the new key.
 
 ## Key rotation
 
@@ -508,7 +706,7 @@ order:
    publisher user, that
    `runuser -u <publisher-user> -- gpg --homedir <signing-home> --list-secret-keys` lists the new
    subkey and shows the primary key as a stub (`sec#`). Running gpg as root would leave root-owned
-   files in the home. Prepare the secret subkey as in step 6 of "Setting up the host": the signer
+   files in the home. Prepare the secret subkey as in step 5 of "Setting up the host": the signer
    needs one with no passphrase.
 3. At least 120 days after step 1, and at least 21 days before the old subkey expires, change
    `signing.fingerprint` (and `signing.certificate`) to the new subkey. Never sign with both. The

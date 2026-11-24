@@ -39,7 +39,8 @@ others.
 |---|---|
 | `products.yml` | Shipped products only: `repo`, `extension`, `php`, `arch`, `ts` (all required, no defaults), optional `exclude` |
 | `publisher/` | The publisher package: the strict loader for `products.yml` and `exclude.yml`, the GitHub release feed client, the release asset cache, the release verifier, the admit stage (per-tag state, retries, quarantine), the run lock, the metadata builder, the signer, the generation publisher, the settings loader, the `run`, `rollback`, `clear-pin` and `requeue` commands, the alert sender, the failure notifier and the hourly watch |
-| `deploy/systemd/` | The systemd units: publisher service, timer and nudge path unit, hourly watch, failure notifier |
+| `deploy/systemd/` | The systemd units: publisher service, timer and nudge path unit, hourly watch, failure notifier, hourly deploy check |
+| `deploy/pkg_deploy.py` | The root script that installs a signed release tag on the host, with rollback and the check |
 | `web/` | The webhook receiver (`sync.php`: verifies a GitHub release delivery and touches the nudge file) and the docroot `.htaccess` template (`docroot.htaccess`: the receiver route, the `.php` block and the 302 to GitHub Releases) |
 | `keyring/` | The sources of the two keyring packages, `rabib-archive-keyring` (apt) and `rabib-release` (dnf): a spec template and the Debian copyright file. `tools/build_keyring.py` builds both from a public certificate; the keys are not in this repository |
 | `setup.sh` | The client setup script (POSIX sh, run as root): reads the key out of the keyring package and prints its fingerprint before the package is installed (`--fingerprint` stops it when the key differs), then installs the package, writes the apt sources file or the dnf repository file and refreshes the indexes |

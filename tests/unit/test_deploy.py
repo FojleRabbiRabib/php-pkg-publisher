@@ -474,7 +474,12 @@ def test_a_restore_that_fails_too_is_reported_as_broken(
         site.deployer.deploy(signed_bundle(tmp_path, keys, TREE, "v1.0.2"))
     assert any("did not finish" in problem for problem in site.deployer.check())
     site.host.fail_on = ""
+    # the units were stopped for the failed deploy and are still stopped: `rollback` finds nothing
+    # running, so it starts nothing, and the runbook tells the operator to start them
+    site.host.active.clear()
+    site.host.calls.clear()
     site.deployer.rollback()
+    assert not any(call.startswith("systemctl start") for call in site.host.calls)
     assert not site.layout.pending.exists()
     assert site.deployer.check() == []
 

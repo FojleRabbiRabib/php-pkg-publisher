@@ -9,6 +9,7 @@ import shlex
 import signal
 from pathlib import Path
 
+import pkg_deploy
 import pytest
 
 from publisher import notifier
@@ -16,6 +17,7 @@ from publisher import notifier
 DIRECTORY = Path(__file__).resolve().parents[2] / "deploy" / "systemd"
 SERVICES = ["php-pkg-publisher.service", "php-pkg-publisher-watch.service"]
 NOTIFY = "php-pkg-publisher-notify@.service"
+CHECK = "php-pkg-publisher-deploy-check.service"
 ALL = sorted(path.name for path in DIRECTORY.iterdir())
 
 
@@ -35,6 +37,8 @@ def test_the_expected_units_exist() -> None:
         sorted(
             [
                 NOTIFY,
+                CHECK,
+                "php-pkg-publisher-deploy-check.timer",
                 "php-pkg-publisher.path",
                 "php-pkg-publisher.service",
                 "php-pkg-publisher.timer",
@@ -73,7 +77,7 @@ def test_every_service_has_a_start_timeout(name: str) -> None:
     assert _unit(name)["Service"]["TimeoutStartSec"]
 
 
-@pytest.mark.parametrize("name", [*SERVICES, "php-pkg-publisher.path"])
+@pytest.mark.parametrize("name", [*SERVICES, "php-pkg-publisher.path", CHECK])
 def test_failures_go_to_the_notifier_by_unit_name(name: str) -> None:
     assert _unit(name)["Unit"]["OnFailure"] == "php-pkg-publisher-notify@%n.service"
 
@@ -86,7 +90,7 @@ def test_the_notifier_gets_the_instance_text_not_the_unescaped_path() -> None:
     command = _exec(NOTIFY)
     assert command[command.index("--unit") + 1] == "%i"  # %I would turn dashes into slashes
     assert "%I" not in " ".join(command)
-    for service in [*SERVICES, "php-pkg-publisher.path"]:
+    for service in [*SERVICES, "php-pkg-publisher.path", CHECK]:
         assert notifier.UNIT_NAME.fullmatch(service)
 
 
@@ -115,12 +119,17 @@ def test_a_stop_of_the_publisher_is_not_a_failure() -> None:
 
 
 def test_the_timers_start_their_services_and_survive_downtime() -> None:
-    for timer in ("php-pkg-publisher.timer", "php-pkg-publisher-watch.timer"):
+    for timer in (
+        "php-pkg-publisher.timer",
+        "php-pkg-publisher-watch.timer",
+        "php-pkg-publisher-deploy-check.timer",
+    ):
         parser = _unit(timer)
         assert parser["Timer"]["Persistent"] == "true"
         assert parser["Timer"]["RandomizedDelaySec"]
         assert parser["Install"]["WantedBy"] == "timers.target"
     assert _unit("php-pkg-publisher-watch.timer")["Timer"]["OnCalendar"] == "hourly"
+    assert _unit("php-pkg-publisher-deploy-check.timer")["Timer"]["OnCalendar"] == "hourly"
     assert "03:17" in _unit("php-pkg-publisher.timer")["Timer"]["OnCalendar"]
 
 
@@ -152,3 +161,35 @@ def test_the_publisher_and_the_watch_read_the_same_settings_file() -> None:
     for name in SERVICES:
         command = _exec(name)
         assert command[command.index("--config") + 1] == "/etc/php-pkg-publisher/publisher.yml"
+
+
+def test_the_check_runs_the_installed_deploy_script_as_root_and_writes_only_its_state() -> None:
+    service = _unit(CHECK)["Service"]
+    assert shlex.split(service["ExecStart"]) == [pkg_deploy.SELF_PATH.as_posix(), "check"]
+    assert service["Type"] == "oneshot"
+    assert service["TimeoutStartSec"]
+    # no User=: the docroot belongs to the site, and the script refuses to run as anyone else
+    assert "User" not in service
+    assert service["ReadWritePaths"] == pkg_deploy.STATE_DIR.as_posix()
+    # a panel may place the docroot under /home: `true` would make every file in it read as missing
+    assert service["ProtectHome"] == "read-only"
+    for key, value in {
+        "NoNewPrivileges": "true",
+        "ProtectSystem": "strict",
+        "PrivateTmp": "true",
+        "RestrictSUIDSGID": "true",
+        "UMask": "0077",
+        "RestrictAddressFamilies": "AF_UNIX",
+    }.items():
+        assert service[key] == value
+
+
+def test_every_schedule_and_every_service_a_deploy_must_stop_is_in_the_scripts_lists() -> None:
+    """A unit added here and not there would keep running while the files under it change."""
+    on_a_schedule = {name for name in ALL if name.endswith((".timer", ".path"))}
+    assert on_a_schedule == set(pkg_deploy.SCHEDULES)
+    stopped = {name for name in ALL if name.endswith(".service")} - {NOTIFY, CHECK}
+    assert stopped == set(pkg_deploy.SERVICES)
+    # the deploy stops the check's timer; a check already running takes the deploy's lock and
+    # skips (`DEPLOY CHECK SKIPPED`, in test_deploy.py), and the unit is installed like the others
+    assert pkg_deploy.UNIT_FILE.fullmatch(CHECK)
