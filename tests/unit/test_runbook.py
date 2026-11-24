@@ -18,7 +18,7 @@ import platform_watch
 from deploykit import generate_key, signed_bundle
 from pkg_deploy import Layout, rules
 
-from publisher import admit, config, generation, metadata, signer, watch
+from publisher import admit, config, generation, metadata, signer, status, watch
 from publisher.__main__ import _parser
 from publisher.settings import DIRECTORIES, load_settings
 
@@ -93,7 +93,7 @@ def test_the_exclusion_examples_load(tmp_path: Path) -> None:
 
 def test_every_command_and_every_unit_is_named() -> None:
     (actions,) = [a for a in _parser()._actions if isinstance(a, argparse._SubParsersAction)]
-    assert set(actions.choices) == {"run", "rollback", "clear-pin", "requeue"}
+    assert set(actions.choices) == {"run", "rollback", "clear-pin", "requeue", "status"}
     for command in actions.choices:
         assert f"`{command}" in TEXT, command
     names = sorted(p.name for p in UNITS.iterdir())
@@ -393,6 +393,32 @@ def test_the_numbers_quoted_are_the_codes() -> None:
     assert admit.QUARANTINE_AGE_SECONDS == 3 * 86400
     assert "at least 5 times" in TEXT
     assert "at least\n3 days old" in TEXT
+
+
+def test_the_status_section_describes_the_view_the_code_prints() -> None:
+    source = (ROOT / "publisher" / "status.py").read_text(encoding="utf-8")
+    assert status.NEWEST == 5
+    assert "| `accepted (newest 5 of N)` |" in TEXT
+    assert status.REPEAT_WINDOW_SECONDS == 120
+    assert "came again within 120 seconds" in FLAT
+    assert f"`{status.DUPLICATES_FILE}` in the nudge directory" in FLAT
+    assert (
+        "The count is a total since the file was made; removing the file as root resets it" in FLAT
+    )
+    # the lines the table names are the ones the view prints
+    printed = ("publisher: ", "run requested: ", "retry due", "quarantined after", "unreadable")
+    for line in printed:
+        assert line in source, line
+    named = ("publisher: working", "run requested: yes", "retry due", "quarantined", "unknown")
+    for line in named:
+        assert f"`{line}`" in TEXT, line
+    # it is the one command that does not take the lock, and the text says so; it must not build
+    # a state store either, which deletes the temporary file a running run is writing
+    assert "Every command except `status` takes the same exclusive lock as a run" in FLAT
+    assert "RunLock" not in source
+    assert "StateStore" not in source
+    assert "`status` takes no lock, creates nothing and changes nothing" in FLAT
+    assert "removes the nudge file and only reads the count file" in FLAT
 
 
 def test_the_outside_watch_section_names_what_the_workflow_and_the_script_use() -> None:

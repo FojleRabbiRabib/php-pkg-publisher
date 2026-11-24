@@ -11,7 +11,8 @@
  *
  * Rules, in order: POST only (405); per-address throttle (429); Content-Length present and at
  * most 1 MiB (413); X-Hub-Signature-256 over the raw body (401); ping and non-release events (200);
- * a repeated delivery GUID (200, no second nudge); then the nudge (202).
+ * a repeated delivery GUID (200, no second nudge, counted for the status view); then the nudge
+ * (202).
  */
 
 declare(strict_types=1);
@@ -29,6 +30,8 @@ const BODY_LIMIT = 1048576;
 const THROTTLE_LIMIT = 20;
 const THROTTLE_WINDOW = 60;
 const GUID_WINDOW = 120;
+const DUPLICATES_FILE = 'duplicates';
+const MAX_DUPLICATES = 999999999;
 const MAX_ENTRIES = 1000;
 const MAX_CLEANUP = 20;
 const MIN_SECRET_BYTES = 16;
@@ -212,12 +215,44 @@ final readonly class Receiver
         }
         $modified = @filemtime($this->guidPath($delivery));
         if ($modified !== false && $request['now'] - $modified < GUID_WINDOW) {
+            $this->countDuplicate($request['now']);
             return 200;
         }
         if ($modified === false && $this->countEntries($directory, MAX_ENTRIES) > MAX_ENTRIES) {
             return 429;
         }
         return null;
+    }
+
+    /**
+     * Count a repeated delivery for the status view: one fixed-width line, "<count> <time of the
+     * last one>" (nine and twelve digits). The answer never depends on it, so any failure here is
+     * ignored. The file is made readable to the publisher user, who is not the web server's user,
+     * at once and whatever this process's umask; the directory keeps everyone else out. The line
+     * is written whole over the old one, so a reader never sees the file empty or half made.
+     */
+    private function countDuplicate(int $now): void
+    {
+        $path = $this->nudgeDir . '/' . DUPLICATES_FILE;
+        // PHP's 'c+' mode follows a link, so refuse one
+        if (is_link($path)) {
+            return;
+        }
+        $handle = @fopen($path, 'c+');
+        if ($handle === false) {
+            return;
+        }
+        @chmod($path, 0644);
+        if (flock($handle, LOCK_EX)) {
+            $fields = explode(' ', (string) stream_get_contents($handle));
+            $count = ctype_digit($fields[0]) ? (int) $fields[0] : 0;
+            $line = sprintf('%09d %012d', min($count + 1, MAX_DUPLICATES), $now);
+            rewind($handle);
+            fwrite($handle, $line);
+            ftruncate($handle, strlen($line));
+            flock($handle, LOCK_UN);
+        }
+        fclose($handle);
     }
 
     /** Remember a delivery only after its nudge was made, so a failed one can be redelivered. */

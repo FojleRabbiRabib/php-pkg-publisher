@@ -312,6 +312,32 @@ def _serialise(state: ProductState) -> bytes:
     return (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
+def state_file(directory: Path, repo: str) -> Path:
+    """The state file of `repo` under a state directory, the one a store is given."""
+    if not config.REPO_NAME.fullmatch(repo) or ".." in repo:
+        raise StateError(f"invalid repo name {net.safe(repo)}")
+    return directory / PRODUCTS_DIRECTORY / f"{repo}.json"
+
+
+def read_state(path: Path) -> ProductState:
+    """Read one state file strictly; a missing file is an empty state. Takes no lock and changes
+    nothing, so a view of the state can run while a run is writing it."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return ProductState()
+    except OSError as error:
+        raise _bad(path, f"cannot open: {error.strerror or error}") from error
+    with os.fdopen(descriptor, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            raise _bad(path, "must be a regular file private to the current user")
+        raw = handle.read(MAX_STATE_BYTES + 1)
+    if len(raw) > MAX_STATE_BYTES:
+        raise _bad(path, "is too large")
+    return _parse(path, raw)
+
+
 class StateStore:
     """One JSON file per product in a private directory; written atomically, read strictly."""
 
@@ -319,6 +345,7 @@ class StateStore:
         lock.require_held()
         try:
             files.require_private_directory(directory)
+            self._root = directory
             self._directory = directory / PRODUCTS_DIRECTORY
             self._directory.mkdir(mode=0o700, exist_ok=True)
             files.require_private_directory(self._directory)
@@ -327,30 +354,10 @@ class StateStore:
             raise StateError(f"{directory}: state directory unusable: {error}") from error
 
     def path(self, repo: str) -> Path:
-        if not config.REPO_NAME.fullmatch(repo) or ".." in repo:
-            raise StateError(f"invalid repo name {net.safe(repo)}")
-        return self._directory / f"{repo}.json"
+        return state_file(self._root, repo)
 
     def load(self, repo: str) -> ProductState:
-        path = self.path(repo)
-        try:
-            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
-        except FileNotFoundError:
-            return ProductState()
-        except OSError as error:
-            raise _bad(path, f"cannot open: {error.strerror or error}") from error
-        with os.fdopen(descriptor, "rb") as handle:
-            info = os.fstat(handle.fileno())
-            if (
-                not stat.S_ISREG(info.st_mode)
-                or info.st_uid != os.geteuid()
-                or info.st_mode & 0o077
-            ):
-                raise _bad(path, "must be a regular file private to the current user")
-            raw = handle.read(MAX_STATE_BYTES + 1)
-        if len(raw) > MAX_STATE_BYTES:
-            raise _bad(path, "is too large")
-        return _parse(path, raw)
+        return read_state(self.path(repo))
 
     def save(self, repo: str, state: ProductState) -> None:
         path = self.path(repo)
@@ -377,6 +384,13 @@ def requeue(store: StateStore, repo: str, tag: str) -> None:
         raise StateError(f"{repo} {net.safe(tag)} has no recorded failure")
     del state.failed[tag]
     store.save(repo, state)
+
+
+def retry_due(failure: Failure, now: float) -> bool:
+    """Whether the next run tries a failed tag again. A quarantined tag is never due."""
+    # A retry date further away than the longest backoff came from a clock step or damage.
+    too_far = failure.next_retry > now + BACKOFF_SECONDS[-1]
+    return not failure.quarantined and (now >= failure.next_retry or too_far)
 
 
 def kind_of(tag: str) -> Kind:
@@ -563,11 +577,7 @@ class Admitter:
     @staticmethod
     def _due(state: ProductState, tag: str, now: float) -> bool:
         failure = state.failed.get(tag)
-        if failure is None:
-            return True
-        # A retry date further away than the longest backoff came from a clock step or damage.
-        too_far = failure.next_retry > now + BACKOFF_SECONDS[-1]
-        return not failure.quarantined and (now >= failure.next_retry or too_far)
+        return failure is None or retry_due(failure, now)
 
     def _check_unchanged(self, repo: str, admitted: AdmittedTag, release: Release) -> None:
         assets = {asset.name: asset for asset in release.assets}

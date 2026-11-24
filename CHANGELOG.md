@@ -374,6 +374,18 @@ All notable changes to this project are documented here. The format follows
   architecture and stops on any other. `shellcheck-py` has no Linux arm64 wheel, so its pin is
   skipped there; the static job stays on amd64. The arm jobs run the client tests only: not the
   image-less `rest` group and not the deploy host test, which check no client.
+- `python -m publisher --config publisher.yml status [--json]` (`publisher`): a read-only view of
+  whether a run is working, whether one was asked for, the 5 tags each product admitted last, the
+  tags that failed with their next retry or that wait in quarantine, and the repeated webhook
+  deliveries. It takes no lock, creates and removes nothing (a run's temporary state file is left
+  alone), reads the receiver's count file as untrusted, and prints no path, fingerprint or secret.
+  The admit stage's reader of one state file is now a function that takes no lock, which the store
+  uses too, and the lock module can say without waiting whether a run holds it.
+- The receiver counts a delivery id that comes again within its 120 seconds (`receiver`): one
+  small `duplicates` file in the nudge directory holds the count and the time of the last repeat
+  as one fixed-width line written whole, so a reader never sees it empty or half made. It is made
+  readable to the publisher user at once, whatever the web server's umask, and never changes the
+  answer, even when it cannot be written.
 
 ### Changed
 

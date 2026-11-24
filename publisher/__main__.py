@@ -2,7 +2,7 @@
 # Copyright 2026 Fojle Rabbi (Rabib)
 """Command line: `python -m publisher --config publisher.yml COMMAND`.
 
-Commands: `run`, `rollback ID`, `clear-pin`, `requeue REPO TAG`.
+Commands: `run`, `rollback ID`, `clear-pin`, `requeue REPO TAG`, `status`.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ from publisher import (
     metadata,
     run,
     signer,
+    status,
     tools,
     verify,
 )
@@ -64,6 +65,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     again.add_argument("repo")
     again.add_argument("tag")
+    view = commands.add_parser(
+        "status", help="show whether a run is working, and what was accepted, failed or repeated"
+    )
+    view.add_argument("--json", action="store_true", help="print the view as JSON")
     return parser
 
 
@@ -140,6 +145,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.command == "requeue":
             run.requeue(settings, arguments.repo, arguments.tag)
             print(f"requeued: {clean(arguments.repo)} {clean(arguments.tag)}")
+            return 0
+        if arguments.command == "status":
+            view = status.gather(settings, time.time())
+            print(status.render_json(view) if arguments.json else status.render_text(view))
             return 0
         run.clear_pin(settings)
         print("pin cleared")

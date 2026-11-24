@@ -305,8 +305,8 @@ def test_alerts_of_a_finished_pass_are_emitted_before_a_later_pass_raises(
     monkeypatch.setattr(run, "LiveStages", make)
     monkeypatch.setattr(Tools, "locate", classmethod(lambda cls: None))
     monkeypatch.setattr(run, "Cache", lambda *a, **k: None)
-    real_pending = locking._pending
-    monkeypatch.setattr(locking, "_pending", lambda path: calls["n"] == 1 or real_pending(path))
+    real_pending = locking.pending
+    monkeypatch.setattr(locking, "pending", lambda path: calls["n"] == 1 or real_pending(path))
     seen: list[run.Result] = []
     with pytest.raises(verify.VerifyError):
         run.run_once(settings, emit=seen.append, now=5.0, log=lambda _: None)

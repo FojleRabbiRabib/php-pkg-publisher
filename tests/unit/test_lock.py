@@ -2,6 +2,7 @@
 # Copyright 2026 Fojle Rabbi (Rabib)
 from __future__ import annotations
 
+import fcntl
 import os
 import subprocess
 import sys
@@ -11,7 +12,16 @@ from pathlib import Path
 
 import pytest
 
-from publisher.lock import LOCK_FILE, LockBusy, LockError, RunLock, run_passes, take_nudge
+from publisher.lock import (
+    LOCK_FILE,
+    LockBusy,
+    LockError,
+    RunLock,
+    busy,
+    pending,
+    run_passes,
+    take_nudge,
+)
 
 HOLDER = """
 import sys, time
@@ -126,8 +136,88 @@ def test_a_lock_file_that_is_a_symlink_is_refused(directory: Path, tmp_path: Pat
         RunLock(directory).acquire()
 
 
+def test_busy_says_a_run_is_working_and_idle_after_it_ends(directory: Path) -> None:
+    with RunLock(directory):
+        started = time.monotonic()
+        assert busy(directory) is True
+        assert time.monotonic() - started < 1  # asked without waiting
+    assert busy(directory) is False
+
+
+def test_busy_in_a_real_second_process_sees_that_process_hold_the_lock(directory: Path) -> None:
+    root = str(Path(__file__).resolve().parents[2])
+    holder = subprocess.Popen(  # noqa: S603
+        [sys.executable, "-I", "-c", HOLDER, str(directory), "5", root],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "held"
+        assert busy(directory) is True
+    finally:
+        holder.kill()
+        holder.wait()
+    assert busy(directory) is False
+
+
+def test_busy_creates_nothing_and_a_missing_lock_file_is_idle(directory: Path) -> None:
+    assert busy(directory) is False
+    assert list(directory.iterdir()) == []
+
+
+def test_busy_leaves_the_lock_file_as_it_found_it(directory: Path) -> None:
+    with RunLock(directory):
+        pass
+    path = directory / LOCK_FILE
+    before = (path.stat().st_mode, path.stat().st_mtime_ns)
+    assert busy(directory) is False
+    assert (path.stat().st_mode, path.stat().st_mtime_ns) == before
+
+
+def test_busy_does_not_keep_the_lock_it_probed(directory: Path) -> None:
+    with RunLock(directory):
+        pass
+    assert busy(directory) is False
+    with RunLock(directory, wait_seconds=0.5, poll_seconds=0.01) as lock:
+        assert lock.held
+
+
+def test_a_probe_in_progress_does_not_look_like_a_run(directory: Path) -> None:
+    other = os.open(directory / LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(other, fcntl.LOCK_SH)  # another view, in the middle of its own probe
+    try:
+        assert busy(directory) is False
+    finally:
+        os.close(other)
+
+
+@pytest.mark.timeout(10)
+def test_busy_does_not_wait_on_a_pipe_in_place_of_the_lock_file(directory: Path) -> None:
+    os.mkfifo(directory / LOCK_FILE)  # the web server's group cannot make this one; be safe anyway
+    assert busy(directory) in (False, None)
+
+
+def test_busy_cannot_tell_when_the_lock_file_cannot_be_opened(
+    directory: Path, tmp_path: Path
+) -> None:
+    target = tmp_path / "elsewhere"
+    target.write_text("", encoding="utf-8")
+    (directory / LOCK_FILE).symlink_to(target)
+    assert busy(directory) is None
+
+
 def _quiet(message: str) -> None:
     return None
+
+
+def test_pending_is_true_only_while_the_nudge_file_is_there(tmp_path: Path) -> None:
+    nudge = tmp_path / "nudge"
+    assert pending(nudge) is False
+    nudge.write_text("", encoding="utf-8")
+    assert pending(nudge) is True
+    nudge.unlink()
+    assert pending(nudge) is False
 
 
 def test_take_nudge_consumes_the_file_once(tmp_path: Path) -> None:

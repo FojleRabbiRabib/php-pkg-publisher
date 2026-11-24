@@ -37,8 +37,10 @@ must be the `User=` of the units (`php-pkg-publisher`) and `<site-root>` the sit
 service's `ReadWritePaths=`. The site is readable by the web server; the state, cache, trust, work
 and lock directories and the signing home belong to the publisher user and are closed to everyone
 else. The nudge directory is shared: the webhook receiver (running as the web server's user,
-`<web-group>` below is its group) creates the nudge file and its own throttle directories in it,
-and the publisher removes the nudge file. The parent directory lets that group in but not read.
+`<web-group>` below is its group) creates the nudge file, its own throttle and delivery-id
+directories and a small count file of repeated deliveries (`duplicates`) in it, and the publisher
+removes the nudge file and only reads the count file. The parent directory lets that group in but
+not read.
 
 ```sh
 useradd --system --no-create-home --shell /usr/sbin/nologin <publisher-user>
@@ -375,8 +377,8 @@ runuser -u <publisher-user> -- env PYTHONPATH=/opt/php-pkg-publisher TMPDIR=/tmp
   python3 -s -m publisher --config /etc/php-pkg-publisher/publisher.yml run
 ```
 
-Every command takes the same exclusive lock as a run and waits for it, then stops if it cannot get
-it, so two of them never change state at once.
+Every command except `status` takes the same exclusive lock as a run and waits for it, then stops
+if it cannot get it, so two of them never change state at once.
 
 | Command | Use |
 |---|---|
@@ -384,10 +386,27 @@ it, so two of them never change state at once.
 | `rollback <generation>` | Re-sign an older generation's content as a new generation and pin it. Generation ids are the directory names in `<site-root>/versions/` (the same names with `.json` added are in `<site-root>/generations/`; pass the name without it): an 8-digit sequence number, a dash and a UTC time stamp. While pinned, runs re-sign the pinned content and hold new releases back; excluding a release the pin lists drops the pin and alerts. |
 | `clear-pin` | End a rollback; the next run publishes the admitted state again. |
 | `requeue <repo> <tag>` | Lift a failure or a quarantine so the next run tries the tag again. It refuses a tag with no recorded failure. |
+| `status [--json]` | Show whether a run is working and what was accepted, what failed and what was repeated. It changes nothing. |
 
 A tag that fails is retried. Once it has failed at least 5 times and the first failure is at least
 3 days old it is quarantined and alerts. Fix the cause (an unsigned asset, a missing bundle) and
 `requeue` it.
+
+`status` takes no lock, creates nothing and changes nothing, so it is safe while a run is working.
+Run it as `<publisher-user>` the same way: the state is closed to everyone else, and another user
+sees `unreadable` where the state should be. Exit status 0 means that the view was printed. It
+shows, with every time in UTC:
+
+| Line | Meaning |
+|---|---|
+| `publisher: working` | A run, or a `rollback`, `clear-pin` or `requeue`, holds the lock. `idle` when none does, `unknown` when the lock file cannot be opened. |
+| `run requested: yes` | The nudge file is there: a run was asked for and has not started. |
+| `accepted (newest 5 of N)` | Per product, the 5 tags admitted last and when. |
+| `failed` | Per product, each failed tag with its attempts and its next try (`retry due` when the next run tries it), or `quarantined`, which waits for `requeue` or an exclusion. The reason is cut short and holds no path. |
+| `repeated deliveries` | How often GitHub's delivery id came again within 120 seconds, and the last time. The receiver counts them in `duplicates` in the nudge directory. A redelivery after 120 seconds nudges again and is not counted. The count is a total since the file was made; removing the file as root resets it. |
+
+`status --json` prints the same facts as JSON (`publisher`, `run_requested`, `products` and
+`repeated_deliveries`).
 
 ## Starting, stopping and recovering the units
 
