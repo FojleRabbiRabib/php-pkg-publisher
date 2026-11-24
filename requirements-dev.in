@@ -7,5 +7,5 @@ pytest==9.2.0
 pytest-timeout==2.4.0
 PyYAML==6.0.3
 ruff==0.17.5
-shellcheck-py==0.11.0.1
+shellcheck-py==0.11.0.1 ; platform_machine != "aarch64"
 types-PyYAML==6.0.12.20261113

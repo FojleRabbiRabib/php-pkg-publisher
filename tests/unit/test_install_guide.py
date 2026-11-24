@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 
+import yaml
 from docblocks import GUIDE, SITE, blocks
 from refusals import APT_DEFAULT, DNF_PREFIX, REFUSALS, SQV_TAIL
 from setupkit import repo, sources
@@ -78,14 +79,28 @@ def test_the_guide_describes_the_setup_script_as_it_behaves() -> None:
     assert "With dnf 4, turn the section off again after a re-run." in text
 
 
-def test_the_guide_claims_only_the_architectures_the_container_layer_runs() -> None:
-    """When an arm64 or aarch64 container test is added, the guide's wording must follow."""
-    text = _guide_text()
-    assert "on `amd64` (apt) and `x86_64` (dnf)" in text
-    assert "nothing tests them yet" in text
-    container = GUIDE.parents[1] / "tests" / "container"
-    arm = [p.name for p in container.glob("*.py") if re.search("arm64|aarch64", p.read_text())]
-    assert arm == [], f"{arm} mention arm: say tested in the guide, or remove the arm run"
+def test_the_guide_claims_the_architectures_the_ci_container_jobs_run_natively() -> None:
+    """The guide says arm64 and aarch64 are tested only while a native arm runner runs them."""
+    text = " ".join(_guide_text().split())
+    workflow = yaml.safe_load((GUIDE.parents[1] / ".github/workflows/ci.yml").read_text("utf-8"))
+    matrix = workflow["jobs"]["container-image"]["strategy"]["matrix"]
+    assert workflow["jobs"]["container-image"]["runs-on"] == "${{ matrix.runner }}"
+    assert matrix["runner"] == ["ubuntu-24.04", "ubuntu-24.04-arm"]
+    # every distribution image runs on both runners; only the image-less "rest" stays on amd64
+    assert matrix["exclude"] == [{"image": "rest", "runner": "ubuntu-24.04-arm"}]
+    # the arm64 runner runs the client tests only, never the deploy host test, and never emulates
+    steps = workflow["jobs"]["container-image"]["steps"]
+    (script,) = [s["run"] for s in steps if s.get("name") == "Container tests"]
+    assert 'elif [ "$RUNNER_ARCH" = ARM64 ]' in script
+    assert (
+        "--ignore=tests/container/test_deploy_host.py" in script.split("elif")[1].split("else")[0]
+    )
+    assert "CONTAINER_ARCH" not in (GUIDE.parents[1] / ".github/workflows/ci.yml").read_text(
+        "utf-8"
+    )
+    assert "each on `amd64` and `arm64` (apt) or on `x86_64` and `aarch64` (dnf)" in text
+    assert "tested on their own hardware, not under emulation" in text
+    assert "nothing tests them yet" not in text
 
 
 def test_the_dnf_removal_block_takes_the_imported_key_out_of_rpm() -> None:

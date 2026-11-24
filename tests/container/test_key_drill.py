@@ -24,8 +24,9 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from arch import native
 from box import Box, docker_available
-from clients import Apt, Dnf, publish
+from clients import Apt, Dnf, native_product, publish
 from images import IMAGES, Image
 from keyrings import (
     ROTATION_KEY_NAME,
@@ -37,7 +38,7 @@ from keyrings import (
 )
 from mirror import Mirror
 from refusals import APT_DEFAULT, DROPS_THE_DATA, REFUSALS, SQV_TAIL
-from rig import Kit, Rig, product
+from rig import Kit, Rig
 
 from publisher.settings import SigningPins
 
@@ -81,7 +82,7 @@ def _signed_by(rig: Rig, kit: Kit, subkey: str, home: Path) -> None:
         [*map(str, [*base, "--import", certificate])], capture_output=True, env=env, check=False
     )
     assert imported.returncode == 0, imported.stderr
-    tree = rig.current / "rpm" / PHP / "x86_64" / "repodata"
+    tree = rig.current / "rpm" / PHP / native().rpm / "repodata"
     for files in (
         [rig.current / "apt" / "dists" / "stable" / "InRelease"],
         [tree / "repomd.xml.asc", tree / "repomd.xml"],
@@ -177,7 +178,7 @@ def test_a_client_that_did_not_upgrade_the_keyring_fails_the_rotation_and_one_th
     tmp_path: Path,
 ) -> None:
     image: Image = IMAGES[name]
-    who = product("a-php", "a", PHP)
+    who = native_product("a-php", "a", PHP)
     rig = make_rig(who, rpm_key=RPM_KEY_NAME)
     publish(rig, who, TAG, time.time())
     with (

@@ -20,11 +20,11 @@ from pathlib import Path
 
 import pytest
 from box import Box, docker_available
-from clients import Apt, Dnf, publish
+from clients import Apt, Dnf, native_product, publish
 from images import IMAGES, Image
 from keyrings import DEB_KEY, RPM_KEY, VERSIONS, client_kit, deb_name, rpm_name
 from mirror import Mirror
-from rig import Rig, product
+from rig import Rig
 
 pytestmark = pytest.mark.container
 
@@ -141,7 +141,7 @@ def test_a_real_client_trusts_the_installed_keyring_and_the_upgrade_clears_the_k
     name: str, packages: Path, make_rig: Callable[..., Rig], tmp_path: Path
 ) -> None:
     image: Image = IMAGES[name]
-    who = product("a-php", "a", PHP)
+    who = native_product("a-php", "a", PHP)
     rig = make_rig(who)
     publish(rig, who, TAG, time.time())
     with (

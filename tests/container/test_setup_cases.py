@@ -16,11 +16,11 @@ from pathlib import Path
 
 import pytest
 from box import Box, docker_available
-from clients import publish
+from clients import native_product, publish
 from images import IMAGES, Image
 from keyrings import DEB_KEY, RPM_KEY, RPM_KEY_NAME
 from mirror import Mirror
-from rig import Kit, Rig, product
+from rig import Kit, Rig
 from setupkit import (
     APT_SOURCES,
     DNF_REPO,
@@ -57,7 +57,7 @@ def test_setup_refuses_what_it_cannot_serve_and_writes_nothing(
     name: str, php_rpms: Path, make_rig: Callable[..., Rig], tmp_path: Path
 ) -> None:
     image: Image = IMAGES[name]
-    rig = make_rig(product("a-php", "a", PHP))
+    rig = make_rig(native_product("a-php", "a", PHP))
     with Mirror(rig) as mirror, Box(image, kit_dir(tmp_path / "kit", php_rpms, mirror)) as box:
         # not root
         done = box.run("sh", "/kit/setup.sh", user="65534")
@@ -99,7 +99,7 @@ def test_setup_stops_before_anything_is_installed_when_the_fingerprint_differs(
     tmp_path: Path,
 ) -> None:
     image: Image = IMAGES[name]
-    who = product("a-php", "a", PHP)
+    who = native_product("a-php", "a", PHP)
     rig = make_rig(who, rpm_key=RPM_KEY_NAME)
     publish(rig, who, TAG, time.time())
     primary = kit.master.primary_fingerprint.upper()
@@ -141,7 +141,7 @@ def test_setup_without_gpg_installs_gnupg_but_not_the_keyring_when_the_fingerpri
     tmp_path: Path,
 ) -> None:
     image: Image = IMAGES[name]
-    who = product("a-php", "a", PHP)
+    who = native_product("a-php", "a", PHP)
     rig = make_rig(who, rpm_key=RPM_KEY_NAME)
     publish(rig, who, TAG, time.time())
     with (
@@ -174,7 +174,7 @@ def test_setup_enables_the_section_of_each_php_it_finds_and_never_disables_one(
     tmp_path: Path,
 ) -> None:
     image: Image = IMAGES[name]
-    who = product("a-php", "a", PHP)
+    who = native_product("a-php", "a", PHP)
     rig = make_rig(who, rpm_key=RPM_KEY_NAME)
     publish(rig, who, TAG, time.time())
     with (
@@ -254,7 +254,7 @@ def test_setup_installs_gnupg_when_the_client_has_none(
     tmp_path: Path,
 ) -> None:
     image: Image = IMAGES[name]
-    who = product("a-php", "a", PHP)
+    who = native_product("a-php", "a", PHP)
     rig = make_rig(who, rpm_key=RPM_KEY_NAME)
     publish(rig, who, TAG, time.time())
     with (

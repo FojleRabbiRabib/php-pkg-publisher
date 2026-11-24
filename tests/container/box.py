@@ -15,6 +15,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Final, NamedTuple
 
+from arch import native
 from images import Image
 
 from publisher.admit import MIN_FREE_BYTES
@@ -91,6 +92,8 @@ class Box:
                 "--rm",
                 "--pull",
                 "never",
+                "--platform",
+                f"linux/{native().deb}",
                 *(["--privileged"] if self._privileged else []),
                 *(["--security-opt", "no-new-privileges"] if self._no_new_privileges else []),
                 "--network",

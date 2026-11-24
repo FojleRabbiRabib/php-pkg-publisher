@@ -366,6 +366,14 @@ All notable changes to this project are documented here. The format follows
   terminal, a direct tunnel, a remote forward and another key all fail) and that the deploy user
   cannot use sudo for anything else. A client sees one fixed line, and the publisher user can load
   `products.yml` only when the state folder is `0711` (at `0700` the deploy is refused).
+- Native arm CI (`ci`): each container job also runs on GitHub's arm64 runner, so every
+  distribution image gets a real `arm64` or `aarch64` client, not an emulated one. The container
+  layer takes its architecture from one place (the docker server's, or `CONTAINER_ARCH` for a local
+  emulated smoke run), starts each container with that platform, and no longer names `x86_64`
+  in a test. The setup action installs the cosign binary and checksum of the runner's
+  architecture and stops on any other. `shellcheck-py` has no Linux arm64 wheel, so its pin is
+  skipped there; the static job stays on amd64. The arm jobs run the client tests only: not the
+  image-less `rest` group and not the deploy host test, which check no client.
 
 ### Changed
 
@@ -384,9 +392,9 @@ All notable changes to this project are documented here. The format follows
 - `setup.sh` shows the key before it installs the keyring package, not after the repository was
   trusted. It needs `tar`, and `rpm2archive` on dnf. Without `--fingerprint` the key is still
   trusted on first use, and the script and the install guide say so.
-- The install guide says it was tested on `amd64` and `x86_64` only; no container test runs
-  `arm64` or `aarch64`, which the repository accepts. A test fails if one is added without the
-  guide changing.
+- The container tests run on `arm64` (apt) and `aarch64` (dnf) as well as on `amd64` and `x86_64`,
+  and the install guide says so. A test ties that sentence to the CI job: the guide can claim the
+  arm architectures only while a native arm runner runs every distribution image.
 - The install guide explains `setup.sh` and what a second run does on dnf: it turns on the section
   of each PHP it finds installed, so a section turned off by hand in the repository file is turned
   on again.

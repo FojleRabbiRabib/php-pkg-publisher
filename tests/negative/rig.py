@@ -65,9 +65,9 @@ exit 1
 """
 
 
-def product(repo: str, extension: str, php: str = "8.3") -> Product:
+def product(repo: str, extension: str, php: str = "8.3", arch: str = "amd64") -> Product:
     return Product(
-        repo=repo, extension=extension, php=(php,), arch=("amd64",), ts=("nts",), exclude=()
+        repo=repo, extension=extension, php=(php,), arch=(arch,), ts=("nts",), exclude=()
     )
 
 

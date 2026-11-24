@@ -6,12 +6,18 @@ from __future__ import annotations
 
 import re
 
+from arch import native
 from box import Box, Done
-from rig import Rig
+from rig import Rig, product
 
 from publisher.config import Product
 
 BASE_RPM = "php-a"
+
+
+def native_product(repo: str, extension: str, php: str) -> Product:
+    """A product that has packages only for the architecture the containers run."""
+    return product(repo, extension, php, native().deb)
 
 
 def publish(rig: Rig, who: Product, tag: str, now: float) -> str:

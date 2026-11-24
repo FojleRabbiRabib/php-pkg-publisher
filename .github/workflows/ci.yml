@@ -50,14 +50,23 @@ jobs:
       - name: Pre-commit hooks
         run: pre-commit run --all-files
 
-  # One job per image, each pulling only its own; "rest" runs any container test that is not
-  # tied to an image, so a test added without an image name is not skipped.
+  # One job per image and per runner architecture, each pulling only its own image. The arm64
+  # runner is a native one, so the apt and dnf clients on it are arm64 and aarch64 ones.
+  # "rest" runs any container test that is not tied to an image, so a test added without an image
+  # name is not skipped. Neither "rest" nor the deploy host test (in the Ubuntu 22.04 job) tests a
+  # client, so the arm64 runner runs neither of them.
   container-image:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
+        runner:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+        exclude:
+          - image: rest
+            runner: ubuntu-24.04-arm
         image:
           - ubuntu-22.04
           - ubuntu-24.04
@@ -88,6 +97,9 @@ jobs:
           if [ "$IMAGE" = rest ]; then
             # exit status 5 means that no test is left over, which is the expected case
             pytest -m container -q -k 'not (ubuntu-22.04 or ubuntu-24.04 or ubuntu-26.04 or debian-bookworm or debian-trixie or almalinux-8 or almalinux-9 or almalinux-10 or fedora-44)' || [ "$?" -eq 5 ]
+          elif [ "$RUNNER_ARCH" = ARM64 ]; then
+            # the deploy host test checks the deploy script, not a client, so only amd64 runs it
+            pytest -m container -q --ignore=tests/container/test_deploy_host.py -k "$IMAGE"
           else
             pytest -m container -q -k "$IMAGE"
           fi
