@@ -18,11 +18,11 @@ from pathlib import Path
 
 import pytest
 from box import Box, docker_available
-from clients import publish
+from clients import native_product, publish
 from images import IMAGES, Image
 from keyrings import RPM_KEY_NAME
 from mirror import Mirror
-from rig import Kit, Rig, product
+from rig import Kit, Rig
 from setupkit import (
     APT_SOURCES,
     DEAD_ID,
@@ -30,7 +30,6 @@ from setupkit import (
     PHP,
     TAG,
     TAMPER_APT,
-    TAMPER_RPM,
     add_dead_repository,
     apt_lists,
     check_printed,
@@ -40,6 +39,7 @@ from setupkit import (
     run,
     served,
     sources,
+    tamper_rpm,
 )
 
 pytestmark = pytest.mark.container
@@ -97,7 +97,7 @@ def _dnf(box: Box, mirror: Mirror, kit: Kit) -> None:
     assert done.code == 0, done.output
     before = box.run("rpm", "-qa", "gpg-pubkey*").output.split()
     # a first run that is refused leaves no repository file behind
-    mirror.tamper = {TAMPER_RPM}
+    mirror.tamper = {tamper_rpm()}
     done = run(box)
     assert done.code != 0 and "refused the repository" in done.output, done.output
     assert box.run("ls", DNF_REPO).code != 0
@@ -136,7 +136,7 @@ def _dnf(box: Box, mirror: Mirror, kit: Kit) -> None:
     assert done.code == 0, done.output
     edited = box.run("cat", DNF_REPO).output
     assert edited == repo(mirror.base, {PHP}) + "priority=50\n# kept\n", edited
-    mirror.tamper = {TAMPER_RPM}
+    mirror.tamper = {tamper_rpm()}
     done = run(box)
     assert done.code != 0, done.output
     assert "refused the repository" in done.output, done.output
@@ -147,7 +147,7 @@ def _dnf(box: Box, mirror: Mirror, kit: Kit) -> None:
     # an unreachable repomd.xml fails the run even where dnf is set to skip unavailable repos
     done = box.run("sh", "-c", "printf 'skip_if_unavailable=True\\n' >> /etc/dnf/dnf.conf")
     assert done.code == 0, done.output
-    mirror.missing = {TAMPER_RPM.removesuffix(".asc")}
+    mirror.missing = {tamper_rpm().removesuffix(".asc")}
     done = run(box)
     assert done.code != 0, done.output
     assert "refused the repository" in done.output, done.output
@@ -164,7 +164,7 @@ def test_setup_installs_refreshes_only_ours_and_leaves_the_host_as_found_when_re
     tmp_path: Path,
 ) -> None:
     image: Image = IMAGES[name]
-    who = product("a-php", "a", PHP)
+    who = native_product("a-php", "a", PHP)
     rig = make_rig(who, rpm_key=RPM_KEY_NAME)
     publish(rig, who, TAG, time.time())
     with (

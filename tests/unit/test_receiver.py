@@ -21,6 +21,8 @@ from typing import Any
 
 import pytest
 
+from publisher.status import Repeats, read_repeats
+
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS = ROOT / "tests" / "php" / "harness.php"
 SECRET = "a-shared-secret-of-enough-length"  # noqa: S105
@@ -202,6 +204,82 @@ def test_a_redelivery_after_the_window_nudges_again(world: World) -> None:
 def test_a_new_delivery_is_not_a_duplicate(world: World) -> None:
     assert world.post() == 202
     assert world.post(delivery=GUID[:-1] + "6", now=NOW + 1) == 202
+
+
+def _counter(world: World) -> Path:
+    return world.nudge_dir / "duplicates"
+
+
+def test_a_repeated_delivery_is_counted_with_the_time_of_the_last_one(world: World) -> None:
+    assert world.answer() == (202, [])
+    assert not _counter(world).exists()
+    world.nudge.unlink()
+    assert world.answer(now=NOW + 30) == (200, [])
+    assert _counter(world).read_text(encoding="utf-8") == "000000001 001800000030"
+    assert world.answer(delivery=GUID.upper(), now=NOW + 60) == (200, [])
+    assert _counter(world).read_text(encoding="utf-8") == "000000002 001800000060"
+
+
+def test_the_status_view_reads_the_count_the_receiver_wrote(world: World) -> None:
+    assert world.post() == 202
+    assert world.post(now=NOW + 30) == 200
+    assert world.post(now=NOW + 60) == 200
+    assert read_repeats(_counter(world)) == Repeats(count=2, last=float(NOW + 60))
+
+
+def test_only_a_repeat_is_counted(world: World) -> None:
+    assert world.post() == 202
+    assert world.post(delivery=GUID[:-1] + "6", now=NOW + 1) == 202
+    assert world.post(event="ping", now=NOW + 2) == 200
+    assert world.post(signature="sha256=" + "0" * 64, now=NOW + 3) == 401
+    assert world.post(method="GET", now=NOW + 4) == 405
+    assert world.post(now=NOW + 121) == 202  # the same id after the window is a new delivery
+    assert not _counter(world).exists()
+
+
+def test_the_count_is_readable_by_the_publisher_whatever_the_web_servers_umask(
+    world: World,
+) -> None:
+    before = os.umask(0o077)  # a PHP process that makes files for its owner alone
+    try:
+        assert world.post() == 202
+        assert world.post(now=NOW + 1) == 200
+    finally:
+        os.umask(before)
+    assert _counter(world).stat().st_mode & 0o777 == 0o644
+
+
+@pytest.mark.parametrize("blocker", ["directory", "link"])
+def test_a_count_that_cannot_be_kept_never_changes_the_answer(world: World, blocker: str) -> None:
+    if blocker == "directory":
+        _counter(world).mkdir()
+    else:
+        _counter(world).symlink_to(world.nudge_dir / "elsewhere")
+    assert world.post() == 202
+    world.nudge.unlink()
+    assert world.answer(now=NOW + 30) == (200, [])
+    assert not world.nudge.exists()
+    assert not (world.nudge_dir / "elsewhere").exists()  # nothing was made through the link
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ("junk", "000000001 001800000030"),
+        ("", "000000001 001800000030"),
+        ("7 5", "000000008 001800000030"),
+        ("000000007 001800000001", "000000008 001800000030"),
+        ("999999999 5", "999999999 001800000030"),
+        ("x" * 200, "000000001 001800000030"),
+    ],
+)
+def test_the_count_starts_again_from_junk_and_stops_at_its_cap(
+    world: World, before: str, after: str
+) -> None:
+    assert world.post() == 202
+    _counter(world).write_text(before, encoding="utf-8")
+    assert world.answer(now=NOW + 30) == (200, [])
+    assert _counter(world).read_text(encoding="utf-8") == after  # junk longer than a line is cut
 
 
 def test_an_existing_nudge_is_success(world: World) -> None:
@@ -399,7 +477,7 @@ def _serving(
     `edits` are (old, new) source replacements, for provoking what a test cannot reach otherwise.
     """
     world = World(tmp_path)
-    source = (ROOT / "web" / "hooks" / "sync.php").read_text(encoding="utf-8")
+    source = (ROOT / "web" / "sync.php").read_text(encoding="utf-8")
     patched = source.replace("/var/lib/php-pkg-publisher/nudge", str(world.nudge_dir)).replace(
         "'/etc/php-pkg-publisher-webhook/secret'", file_literal or f"'{world.secret_file}'"
     )

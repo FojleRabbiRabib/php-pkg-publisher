@@ -128,6 +128,32 @@ class RunLock:
             os.close(descriptor)
 
 
+def busy(directory: Path) -> bool | None:
+    """Whether something holds the lock (a run, or a `rollback`, `clear-pin` or `requeue`), asked
+    without waiting and without creating anything.
+
+    A lock file that does not exist yet means no run has ever held it. None means the answer
+    cannot be had (the file cannot be opened or locked, for example by another user).
+    """
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        descriptor = os.open(directory / LOCK_FILE, flags)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    try:
+        # shared, so two views never block each other; a run holds it exclusively
+        fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+    return False
+
+
 def take_nudge(path: Path, *, log: Callable[[str], None]) -> bool:
     """Consume the nudge file; True when a nudge was there.
 
@@ -156,7 +182,8 @@ def _set_aside(path: Path, log: Callable[[str], None]) -> None:
     log(f"error: the nudge was a directory; set aside as {target.name}")
 
 
-def _pending(path: Path) -> bool:
+def pending(path: Path) -> bool:
+    """Whether the nudge file is there, which means a run was asked for and has not started."""
     try:
         path.lstat()
     except FileNotFoundError:
@@ -192,7 +219,7 @@ def run_passes(
             if consumed:
                 _restore_nudge(nudge)
             raise
-        if not _pending(nudge):
+        if not pending(nudge):
             break
     return results
 

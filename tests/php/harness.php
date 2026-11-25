@@ -15,7 +15,7 @@ use PkgPublisher\Hooks\Receiver;
 use function PkgPublisher\Hooks\guarded;
 
 define('PKG_HOOK_TEST', true);
-require dirname(__DIR__, 2) . '/web/hooks/sync.php';
+require dirname(__DIR__, 2) . '/web/sync.php';
 
 $case = json_decode((string) stream_get_contents(STDIN), true, 16, JSON_THROW_ON_ERROR);
 $body = (string) $case['body'];

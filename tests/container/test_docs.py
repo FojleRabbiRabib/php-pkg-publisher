@@ -16,12 +16,12 @@ from pathlib import Path
 
 import pytest
 from box import Box, docker_available
-from clients import publish
+from clients import native_product, publish
 from docblocks import blocks, runnable
 from images import IMAGES, Image
 from keyrings import RPM_KEY_NAME
 from mirror import Mirror
-from rig import Kit, Rig, product
+from rig import Kit, Rig
 from setupkit import APT_SOURCES, DNF_REPO, PHP, TAG, kit_dir, served
 
 pytestmark = pytest.mark.container
@@ -42,7 +42,7 @@ def test_the_commands_of_the_install_guide_run_on_each_distribution(
     tmp_path: Path,
 ) -> None:
     image: Image = IMAGES[name]
-    who = product("a-php", "a", PHP)
+    who = native_product("a-php", "a", PHP)
     rig = make_rig(who, rpm_key=RPM_KEY_NAME)
     publish(rig, who, TAG, time.time())
     mine = [b for b in blocks() if b.family == image.family]

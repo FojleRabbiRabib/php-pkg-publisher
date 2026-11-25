@@ -23,12 +23,13 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from arch import native
 from box import Box, docker_available
-from clients import Apt, Dnf, publish
+from clients import Apt, Dnf, native_product, publish
 from conftest import client
 from images import IMAGES, Image
 from mirror import Mirror
-from rig import Rig, product
+from rig import Rig
 
 pytestmark = pytest.mark.container
 
@@ -50,7 +51,7 @@ def _kit(directory: Path, rig: Rig, mirror: Mirror, php: str) -> Path:
     )
     (directory / "repos.d").mkdir()
     (directory / "repos.d" / "test.repo").write_text(
-        f"[test]\nname=test\nbaseurl={mirror.base}/rpm/{php}/x86_64\nenabled=1\n"
+        f"[test]\nname=test\nbaseurl={mirror.base}/rpm/{php}/{native().rpm}\nenabled=1\n"
         "gpgcheck=1\nrepo_gpgcheck=1\ngpgkey=file:///kit/repo.asc file:///kit/rpm.asc\n",
         encoding="utf-8",
     )
@@ -70,7 +71,7 @@ def test_a_real_client_installs_upgrades_follows_a_rollback_and_refuses_tamperin
     name: str, php: str, make_rig: Callable[..., Rig], tmp_path: Path
 ) -> None:
     image: Image = IMAGES[name]
-    who = product("a-php", "a", php)
+    who = native_product("a-php", "a", php)
     rig = make_rig(who)
     now = time.time()
     first_id = publish(rig, who, FIRST, now)
@@ -89,7 +90,7 @@ def test_a_real_client_installs_upgrades_follows_a_rollback_and_refuses_tamperin
         mirror.tamper = (
             {"apt/dists/stable/InRelease", "apt/dists/stable/Release"}
             if isinstance(tool, Apt)
-            else {f"rpm/{php}/x86_64/repodata/repomd.xml.asc"}
+            else {f"rpm/{php}/{native().rpm}/repodata/repomd.xml.asc"}
         )
         done = tool.update()
         assert tool.refused(done), done.output

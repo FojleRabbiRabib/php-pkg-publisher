@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 from typing import Final
 
+from arch import native
 from box import Box, Done
 from keyrings import DEB_KEY, RPM_KEY, SERVED_DEB, SERVED_RPM
 from mirror import Mirror
@@ -33,12 +34,16 @@ FAKE_PHP: Final = {
     "php85-php-common-8.5.0.rpm": ("php85-php-common", "8.5.0"),
 }
 TAMPER_APT: Final = {"apt/dists/stable/InRelease", "apt/dists/stable/Release"}
-TAMPER_RPM: Final = f"rpm/{PHP}/x86_64/repodata/repomd.xml.asc"
 KEY_LINE: Final = re.compile(
     r"^ {2}(primary key|signing subkey) ([0-9A-F]{40}), "
     r"(expires \d{4}-\d{2}-\d{2}|does not expire)$",
     re.MULTILINE,
 )
+
+
+def tamper_rpm() -> str:
+    """The signature file of the rpm metadata of the architecture the containers run."""
+    return f"rpm/{PHP}/{native().rpm}/repodata/repomd.xml.asc"
 
 
 def build_php_rpms(root: Path) -> Path:

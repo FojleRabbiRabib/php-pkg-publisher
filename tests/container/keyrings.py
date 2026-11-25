@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Final
 
 import build_keyring
+from arch import native
 from mirror import Mirror
 from pkgkit import Key, add_signing_subkey, stop_agent, subkeys_only, with_second_subkey
 from rig import Kit
@@ -46,7 +47,7 @@ def client_kit(directory: Path, packages: Path, mirror: Mirror, php: str) -> Pat
     )
     (directory / "repos.d").mkdir()
     (directory / "repos.d" / "test.repo").write_text(
-        f"[rabib-test]\nname=test\nbaseurl={mirror.base}/rpm/{php}/x86_64\nenabled=1\n"
+        f"[rabib-test]\nname=test\nbaseurl={mirror.base}/rpm/{php}/{native().rpm}\nenabled=1\n"
         f"gpgcheck=0\nrepo_gpgcheck=1\ngpgkey=file://{RPM_KEY}\n",
         encoding="utf-8",
     )

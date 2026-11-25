@@ -4,9 +4,10 @@ One signed repository serves every extension: after the steps below, `apt instal
 `dnf install` works for each of them, and normal upgrades keep them current.
 
 Supported and tested: Ubuntu 22.04, 24.04 and 26.04, Debian 12 (bookworm) and 13 (trixie),
-AlmaLinux 8, 9 and 10, and Fedora 44, on `amd64` (apt) and `x86_64` (dnf). The repository also
-accepts `arm64` and `aarch64` clients, but nothing tests them yet. Other apt and dnf
-distributions are untested. cPanel, EasyApache and CloudLinux are not supported yet.
+AlmaLinux 8, 9 and 10, and Fedora 44, each on `amd64` and `arm64` (apt) or on `x86_64` and
+`aarch64` (dnf). The two architectures are tested on their own hardware, not under emulation.
+Other apt and dnf distributions are untested. cPanel, EasyApache and CloudLinux are not
+supported yet.
 
 Every command block marked `family=apt` or `family=dnf` below is run, in that order, on a real
 `apt` or `dnf` of each tested distribution by `tests/container/test_docs.py`, against a local

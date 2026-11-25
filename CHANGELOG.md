@@ -128,7 +128,7 @@ All notable changes to this project are documented here. The format follows
   A start limit of five in ten minutes stops a failed run's restored nudge from restarting the
   publisher for ever. The notifier gets `%i`, because `%I` would turn the dashes of the unit name
   into slashes.
-- Webhook receiver `web/hooks/sync.php` (PHP 8.3, one file, no dependencies): answers a fixed
+- Webhook receiver `web/sync.php` (PHP 8.3, one file, no dependencies): answers a fixed
   status with an empty body, checks in order the method (405), a per-address throttle of 20 posts
   a minute (429), `Content-Length` and a 1 MiB body cap (413), the `X-Hub-Signature-256` HMAC
   (401), the event and action (ping, other events and other actions get 200), the delivery GUID
@@ -298,6 +298,98 @@ All notable changes to this project are documented here. The format follows
   with `publisher/config.py` and the container image list.
 - Every tracked file that can hold a comment now carries the licence header, and a test fails when
   one does not; the files that cannot are listed with the reason.
+- Release workflow (`release.yml`): a pushed `v*` tag runs every CI gate through the same
+  workflow, then makes the GitHub Release titled `PHP Package Publisher – vX.Y.Z` with the notes
+  of that version from this changelog. Only the release job may write. It makes no release when
+  the tag is not `vX.Y.Z` (no leading zeros), is not annotated, is not on `main`, when the
+  changelog has no dated section for the version, or when `[Unreleased]` still has entries
+  (`tools/release_notes.py` decides the first and the last two). It does not check the tag's
+  signature, which needs the pinned key; the runbook has the steps to cut a release.
+- Deploy job in the release workflow (`ci`): after the release is made, the tag's `git bundle` is
+  sent over ssh to the host's locked key, which runs the deploy script. The job has no write
+  permission, runs in the `production` environment, which holds the three secrets (key, pinned host
+  key, target), and does one deploy at a time. The repository's settings must limit that
+  environment to `v*` tags; the workflow cannot set that. It fetches the tag object itself, because
+  a checkout can leave a lightweight tag in its place, and refuses a tag that is not annotated, a
+  bundle that does not verify in an empty repository, or one over the host's size limit. It never
+  turns host-key checking off. The host prints one fixed line and ssh is quiet (its own messages
+  would name the target), so the log of this public repository shows nothing else. The host test
+  runs the job's own scripts against the real sshd and deploy script, and shows that a lightweight
+  tag stops the job before the bundle is made and that an unpinned host key stops it at ssh.
+- Deploy check units (`php-pkg-publisher-deploy-check.service` and `.timer`, `publisher`): an
+  hourly run, as root, of `php-pkg-publisher-deploy check`, which reports every difference
+  between the host and what the last deploy wrote and fails, so the notifier alerts. It runs
+  outside the publisher's units because a panel may place the docroot under `/home`, which their
+  `ProtectHome=true` hides; for the check it is read-only. A test ties the deploy script's lists
+  of schedules and services to the units on disk, so a new unit cannot keep running through a
+  deploy.
+- Runbook and security notes for the deploy (`docs`): the first deploy now installs the code,
+  `products.yml`, the units and the two web files, so setting up the host copies only the deploy
+  script by hand, and only after its tag verifies the way the script verifies one (SSH signatures
+  only, the checking program fixed on the command line so a checkout's own configuration cannot
+  swap it, the signed name compared with the ref); the file installed is the tag's own, never the
+  working tree's. New steps give the deploy user (`/bin/sh`, locked password), its key locked to
+  the script with `restrict`, the one sudo line with no arguments, the files the script reads, and
+  the modes that work (state folder `0711`, backups `0700`). "Deploying a change" has the GitHub
+  setup (the `production` environment limited to `v*` tags, three secrets, the host key line for a
+  port and for port 22), the fixed lines, exit codes and refusal codes, the local commands, how to
+  recover from a deploy that did not finish (`rollback` starts no units), and a deploy by hand.
+  The host test runs the runbook's own commands, and tests tie its tables and examples to the
+  script.
+- Runbook section "Setting up the host" (`docs`): the order of a first set-up as root. Code owned
+  by root, settings with their owners and modes, the webhook secret folder, the signing subkey
+  import (the passphrase is removed offline, in a throwaway home; the host home must show the
+  primary key as a stub, and a signature is checked with no passphrase), the web files and the two
+  links, and a check of what the web server's user can and cannot do. The docroot is locked against
+  that user: its files are owned by root, the folder above it is owned by root, and the folder
+  carries the immutable flag. Tests tie the paths and names it gives to the receiver, the units,
+  `setup.sh` and the docroot rules.
+- Deploy script `deploy/pkg_deploy.py` (`publisher`), run as root with a `git bundle` of a tag on
+  standard input. It deploys a tag only if it is annotated, named `vX.Y.Z`, signed by the pinned
+  release key, carries that same name inside the signed object (`git verify-tag` alone accepts a
+  signed tag under another name) and is not older than the last deploy. It reads only the known
+  files from the signed commit (no link, no submodule), loads `products.yml` with the new loader as
+  the publisher user, copies what it will replace to a backup, stops the units, replaces each file
+  by a rename, replaces itself last, and starts the units again; any failure puts the backup back.
+  It deletes only files its own manifest lists from an earlier deploy and the new tag dropped. A
+  repeat of the tag already in place changes nothing, and a deploy that did not finish blocks the
+  next until `rollback` has run. Local commands: `rollback` (undoes the last deploy and bans its
+  version, so a replay of its signed tag cannot put it back; `allow` lifts the ban), `check`
+  (compares the host with the last deploy: hashes, owners, modes, the docroot flag, the links and
+  the keyring packages) and `record`/`forget` for the hand-placed keyring packages. It prints one
+  fixed code, because a public repository's workflow log is public; the detail goes to the
+  journal.
+- Deploy host test (`tests/container/test_deploy_host.py`, Ubuntu 22.04, throwaway keys): the
+  installed script runs as the forced command of a locked key behind a real sshd and the one sudo
+  line, with a real `runuser`, an ext4 folder with the immutable flag and a web user; only
+  `systemctl` is faked. It shows that the key runs nothing else (the client's own command, a
+  terminal, a direct tunnel, a remote forward and another key all fail) and that the deploy user
+  cannot use sudo for anything else. A client sees one fixed line, and the publisher user can load
+  `products.yml` only when the state folder is `0711` (at `0700` the deploy is refused).
+- Native arm CI (`ci`): each container job also runs on GitHub's arm64 runner, so every
+  distribution image gets a real `arm64` or `aarch64` client, not an emulated one. The container
+  layer takes its architecture from one place (the docker server's, or `CONTAINER_ARCH` for a local
+  emulated smoke run), starts each container with that platform, and no longer names `x86_64`
+  in a test. The setup action installs the cosign binary and checksum of the runner's
+  architecture and stops on any other. `shellcheck-py` has no Linux arm64 wheel, so its pin is
+  skipped there; the static job stays on amd64. The arm jobs run the client tests only: not the
+  image-less `rest` group and not the deploy host test, which check no client.
+- `python -m publisher --config publisher.yml status [--json]` (`publisher`): a read-only view of
+  whether a run is working, whether one was asked for, the 5 tags each product admitted last, the
+  tags that failed with their next retry or that wait in quarantine, and the repeated webhook
+  deliveries. It takes no lock, creates and removes nothing (a run's temporary state file is left
+  alone), reads the receiver's count file as untrusted, and prints no path, fingerprint or secret.
+  The admit stage's reader of one state file is now a function that takes no lock, which the store
+  uses too, and the lock module can say without waiting whether a run holds it.
+- The receiver counts a delivery id that comes again within its 120 seconds (`receiver`): one
+  small `duplicates` file in the nudge directory holds the count and the time of the last repeat
+  as one fixed-width line written whole, so a reader never sees it empty or half made. It is made
+  readable to the publisher user at once, whatever the web server's umask, and never changes the
+  answer, even when it cannot be written.
+- A README section for the key fingerprint (`docs`): the place the install guide and `setup.sh`
+  already tell a client to compare against, with the placeholder the pin file and the guide
+  hold until the repository is live. A test requires the pin file, the README and both places in
+  the install guide to hold one value, so going live changes all four in one commit.
 
 ### Changed
 
@@ -316,9 +408,9 @@ All notable changes to this project are documented here. The format follows
 - `setup.sh` shows the key before it installs the keyring package, not after the repository was
   trusted. It needs `tar`, and `rpm2archive` on dnf. Without `--fingerprint` the key is still
   trusted on first use, and the script and the install guide say so.
-- The install guide says it was tested on `amd64` and `x86_64` only; no container test runs
-  `arm64` or `aarch64`, which the repository accepts. A test fails if one is added without the
-  guide changing.
+- The container tests run on `arm64` (apt) and `aarch64` (dnf) as well as on `amd64` and `x86_64`,
+  and the install guide says so. A test ties that sentence to the CI job: the guide can claim the
+  arm architectures only while a native arm runner runs every distribution image.
 - The install guide explains `setup.sh` and what a second run does on dnf: it turns on the section
   of each PHP it finds installed, so a section turned off by hand in the repository file is turned
   on again.

@@ -1,0 +1,108 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Fojle Rabbi (Rabib)
+name: Release
+
+# A pushed tag runs every CI gate, makes the GitHub Release from the changelog, then sends the tag
+# to the host. The ssh key here only carries a bundle of the tag: the host deploys it only after
+# it has checked the tag's own signature against a public key kept on the host. No signing key is
+# ever in GitHub, so nothing in this workflow can make the host run code the release key did not
+# sign.
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+jobs:
+  ci:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      # The whole history, so that the check below can tell whether the tag is on main.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # The tag is checked first by the tool: a ref name is used only after it has passed.
+      - name: Take the notes from the changelog
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 tools/release_notes.py "$TAG" > "$RUNNER_TEMP/notes.md"
+      - name: Check the tag
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # an annotated tag is a tag object; a lightweight one points at the commit itself
+          test "$(gh api "repos/$GH_REPO/git/ref/tags/$TAG" --jq .object.type)" = tag
+          git merge-base --is-ancestor HEAD origin/main
+      - name: Create the release
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$TAG" --verify-tag --title "PHP Package Publisher – $TAG" \
+            --notes-file "$RUNNER_TEMP/notes.md"
+
+  # The environment holds the three secrets and only a `v*` tag may use it (set in the repository's
+  # settings). One deploy at a time. GitHub keeps only the newest waiting run, which is harmless:
+  # the host refuses an older tag anyway.
+  deploy:
+    needs: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: production
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      # The whole history: `git bundle` cannot make a bundle from a shallow clone.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bundle the tag
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          # the checkout can leave a lightweight tag in place of the tag object: fetch the object
+          git fetch --no-tags origin "+refs/tags/$TAG:refs/tags/$TAG"
+          test "$(git cat-file -t "refs/tags/$TAG")" = tag
+          git bundle create "$RUNNER_TEMP/tag.bundle" "refs/tags/$TAG"
+          # the host checks it the same way, in an empty repository
+          git init --quiet --bare "$RUNNER_TEMP/verify.git"
+          git --git-dir="$RUNNER_TEMP/verify.git" bundle verify "$RUNNER_TEMP/tag.bundle"
+          test "$(stat -c %s "$RUNNER_TEMP/tag.bundle")" -le 67108864
+      # Whatever the host prints is public in this log, and it prints one fixed line. `-q` keeps
+      # ssh's own messages out: they name the target's host name and address, which are not secret
+      # values and so are not masked. A failed login then shows only the exit status.
+      - name: Send the bundle to the host
+        shell: bash
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_TARGET: ${{ secrets.DEPLOY_TARGET }}
+        run: |
+          umask 077
+          trap 'rm -f "$RUNNER_TEMP/deploy_key"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/known_hosts"
+          ssh -q -F /dev/null -T -i "$RUNNER_TEMP/deploy_key" \
+            -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" -o GlobalKnownHostsFile=/dev/null \
+            -o ConnectTimeout=30 -o ServerAliveInterval=15 \
+            -- "$DEPLOY_TARGET" < "$RUNNER_TEMP/tag.bundle"

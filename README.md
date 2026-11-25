@@ -18,6 +18,17 @@ empty until the first product ships.
 - [Security notes](docs/security.md): the trust chain, how to check a package yourself, key
   rotation and the limits.
 
+## The key fingerprint
+
+This is the fingerprint of the repository's primary key, published here and in the release
+notes so that a client can compare it with the one its keyring package installs. The
+[install guide](docs/installation.md) shows how, and `setup.sh --fingerprint` stops when the
+key differs. Until the repository is live the line below is a placeholder:
+
+```text
+<fingerprint published with the key ceremony>
+```
+
 ## How it will work
 
 1. A product repository publishes a tagged release with its packages, checksums and cosign
@@ -38,13 +49,14 @@ others.
 | Path | Role |
 |---|---|
 | `products.yml` | Shipped products only: `repo`, `extension`, `php`, `arch`, `ts` (all required, no defaults), optional `exclude` |
-| `publisher/` | The publisher package: the strict loader for `products.yml` and `exclude.yml`, the GitHub release feed client, the release asset cache, the release verifier, the admit stage (per-tag state, retries, quarantine), the run lock, the metadata builder, the signer, the generation publisher, the settings loader, the `run`, `rollback`, `clear-pin` and `requeue` commands, the alert sender, the failure notifier and the hourly watch |
-| `deploy/systemd/` | The systemd units: publisher service, timer and nudge path unit, hourly watch, failure notifier |
-| `web/` | The webhook receiver (`hooks/sync.php`: verifies a GitHub release delivery and touches the nudge file) and the docroot `.htaccess` template (`docroot.htaccess`: the receiver route, the `.php` block and the 302 to GitHub Releases) |
+| `publisher/` | The publisher package: the strict loader for `products.yml` and `exclude.yml`, the GitHub release feed client, the release asset cache, the release verifier, the admit stage (per-tag state, retries, quarantine), the run lock, the metadata builder, the signer, the generation publisher, the settings loader, the `run`, `rollback`, `clear-pin`, `requeue` and `status` commands, the alert sender, the failure notifier and the hourly watch |
+| `deploy/systemd/` | The systemd units: publisher service, timer and nudge path unit, hourly watch, failure notifier, hourly deploy check |
+| `deploy/pkg_deploy.py` | The root script that installs a signed release tag on the host, with rollback and the check |
+| `web/` | The webhook receiver (`sync.php`: verifies a GitHub release delivery, touches the nudge file and counts repeated deliveries) and the docroot `.htaccess` template (`docroot.htaccess`: the receiver route, the `.php` block and the 302 to GitHub Releases) |
 | `keyring/` | The sources of the two keyring packages, `rabib-archive-keyring` (apt) and `rabib-release` (dnf): a spec template and the Debian copyright file. `tools/build_keyring.py` builds both from a public certificate; the keys are not in this repository |
 | `setup.sh` | The client setup script (POSIX sh, run as root): reads the key out of the keyring package and prints its fingerprint before the package is installed (`--fingerprint` stops it when the key differs), then installs the package, writes the apt sources file or the dnf repository file and refreshes the indexes |
 | `docs/` | The manuals: install guide, runbook and security notes. Every command block of the install guide is run on a real `apt` or `dnf` by the container layer, and the runbook and security notes are checked against the code they quote |
-| `tools/` | Repository tooling: the pin lint (`python tools/lint_pins.py [root]`) and the keyring builder (`python tools/build_keyring.py --help`) |
+| `tools/` | Repository tooling: the pin lint (`python tools/lint_pins.py [root]`), the keyring builder (`python tools/build_keyring.py --help`) and the release notes of a tag (`python tools/release_notes.py vX.Y.Z`) |
 | `tests/` | Unit tests, and the negative layer (`tests/negative/`: whole passes over throwaway keys and real packages that must fail closed, read back with `gpgv`); and the container layer (`tests/container/`, `pytest -m container`: a real `apt` or `dnf` of each distribution installs, upgrades and follows a rollback, and refuses tampered metadata, and installs the built keyring packages and trusts the key file they install) |
 
 ## Development

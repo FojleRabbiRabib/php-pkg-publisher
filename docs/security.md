@@ -67,6 +67,32 @@ package signature.
   made while a subkey was valid is still accepted after it expired. There, a revocation shipped
   in a keyring update is the control.
 
+## The deploy channel
+
+A pushed tag is sent to the host by the `deploy` job of the release workflow. The runbook
+("Deploying a change") has the steps; this is what the channel does and does not allow.
+
+- **The key in GitHub can only send a bundle.** It logs in as a user whose key is locked: it runs
+  one script, through one sudo line with no arguments, with no terminal, no forwarding and no
+  other command (the client's own command is ignored). The job pins the host key, and ssh never
+  turns the check off.
+- **The host decides, not GitHub.** The script deploys a bundle only if it holds one annotated
+  tag named `vX.Y.Z`, whose signed name is the same and which is signed by the key in
+  `allowed_signers` (refusals: `signature-invalid`, `tag-invalid`). The signing key is never in
+  GitHub, so whoever controls the workflow, the secrets or the network can make a deploy fail or
+  repeat a tag already in place (which changes nothing), but cannot make the host run code the
+  release key did not sign.
+- **An old or rolled-back tag cannot come back.** A version older than the last deploy is refused
+  (`version-older`), and so is one the operator rolled back (`version-denied`), until the operator
+  lifts the ban.
+- **The release key is the root of trust of the deploy.** Whoever holds it can sign a newer tag,
+  and a deployed tag runs as root (the script replaces itself) and as the publisher user. To
+  rotate it, change `allowed_signers` on the host. Keep it where a tag is signed and nowhere else.
+- **Drift is reported.** An hourly check, as root, compares every file the last deploy wrote and
+  the docroot with what was recorded, and a difference is alerted.
+- **The log is public.** The host prints one fixed code and ssh is quiet, so a failed deploy
+  shows nothing about the host in the workflow log; the detail is in the host's journal.
+
 ## Limits
 
 - **dnf has no `Valid-Until`.** apt rejects metadata older than `Valid-Until`; dnf keeps trusting

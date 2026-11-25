@@ -61,7 +61,7 @@ def make_key(
         home=home,
         env=env,
     )
-    assert created.code == 0
+    assert created.code == 0, created.stderr
     listing = run([*gpg, "--with-colons", "--list-keys"], home=home, env=env)
     master = next(
         line.split(":")[9] for line in listing.stdout.splitlines() if line.startswith("fpr")
@@ -71,7 +71,7 @@ def make_key(
         home=home,
         env=env,
     )
-    assert added.code == 0
+    assert added.code == 0, added.stderr
     if state == "revoked":
         script = "key 1\nrevkey\ny\n0\n\ny\nsave\n"
         revoked = subprocess.run(  # noqa: S603
@@ -81,7 +81,7 @@ def make_key(
             env={"GNUPGHOME": str(home), "PATH": "/usr/bin:/bin"},
             check=False,
         )
-        assert revoked.returncode == 0
+        assert revoked.returncode == 0, revoked.stderr
     listing = run([*gpg, "--with-colons", "--fixed-list-mode", "--list-keys"], home=home, env=env)
     lines = listing.stdout.splitlines()
     index = next(i for i, line in enumerate(lines) if line.startswith("sub"))
