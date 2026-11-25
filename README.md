@@ -18,6 +18,17 @@ empty until the first product ships.
 - [Security notes](docs/security.md): the trust chain, how to check a package yourself, key
   rotation and the limits.
 
+## The key fingerprint
+
+This is the fingerprint of the repository's primary key, published here and in the release
+notes so that a client can compare it with the one its keyring package installs. The
+[install guide](docs/installation.md) shows how, and `setup.sh --fingerprint` stops when the
+key differs. Until the repository is live the line below is a placeholder:
+
+```text
+<fingerprint published with the key ceremony>
+```
+
 ## How it will work
 
 1. A product repository publishes a tagged release with its packages, checksums and cosign

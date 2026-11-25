@@ -386,6 +386,10 @@ All notable changes to this project are documented here. The format follows
   as one fixed-width line written whole, so a reader never sees it empty or half made. It is made
   readable to the publisher user at once, whatever the web server's umask, and never changes the
   answer, even when it cannot be written.
+- A README section for the key fingerprint (`docs`): the place the install guide and `setup.sh`
+  already tell a client to compare against, with the placeholder the pin file and the guide
+  hold until the repository is live. A test requires the pin file, the README and both places in
+  the install guide to hold one value, so going live changes all four in one commit.
 
 ### Changed
 
